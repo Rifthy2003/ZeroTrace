@@ -1,0 +1,11 @@
+import axios from "axios";
+const api = axios.create({ baseURL: import.meta.env.VITE_API_URL || "" });
+export const createScan = (payload) => api.post("/api/scans", payload).then((r) => r.data);
+export const listScans = () => api.get("/api/scans").then((r) => r.data);
+export const getScan = (id) => api.get(`/api/scans/${id}`).then((r) => r.data);
+export const getFindings = (id, params = {}) => api.get(`/api/scans/${id}/findings`, { params }).then((r) => r.data);
+export const getSummary = (id) => api.get(`/api/scans/${id}/summary`).then((r) => r.data);
+export const cancelScan = (id) => api.post(`/api/scans/${id}/cancel`).then((r) => r.data);
+export const getOverview = () => api.get("/api/scans/stats/overview").then((r) => r.data);
+export const reportUrl = (id) => `${api.defaults.baseURL}/api/scans/${id}/report`;
+export default api;
