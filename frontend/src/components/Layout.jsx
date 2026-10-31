@@ -5,7 +5,14 @@ export default function Layout() {
   return (
     <div className="min-h-screen flex text-slate-200">
       <aside className="w-56 bg-slate-900 border-r border-slate-800 p-4">
-        <div className="text-emerald-400 font-bold mb-6">🛡 VulnScanner</div>
+        <div className="mb-6">
+          <div className="text-emerald-400 font-bold text-lg flex items-center gap-1.5">
+            <span>🛡</span>
+            <span>ZeroTrace</span>
+          </div>
+          <div className="text-[10px] text-slate-400 font-medium tracking-wide">Automated Web Vulnerability Scanner</div>
+          <div className="text-[9px] text-emerald-500/80 italic mt-0.5">Discover. Analyze. Secure.</div>
+        </div>
         <nav className="space-y-1">
           {links.map(([to, label]) => (
             <NavLink key={to} to={to} end className={({ isActive }) => `block px-3 py-2 rounded text-sm ${isActive ? "bg-emerald-600/20 text-emerald-300" : "hover:bg-slate-800"}`}>{label}</NavLink>

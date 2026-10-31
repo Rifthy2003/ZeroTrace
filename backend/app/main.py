@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import scans
+from app.api import scans, applications, activities
 from app.core.config import settings
 from app.core.logging_config import configure_logging
 from app.database.session import init_db
@@ -18,8 +18,12 @@ async def lifespan(_app):
     yield
 
 
-app = FastAPI(lifespan=lifespan, title=settings.APP_NAME, version="1.0.0",
-              description="Authorized defensive web vulnerability assessment platform. Scan only systems you own or have written permission to test.")
+app = FastAPI(
+    lifespan=lifespan,
+    title="ZeroTrace",
+    version="1.0.0",
+    description="ZeroTrace — Automated Web Vulnerability Scanner. Discover. Analyze. Secure. Authorized defensive web vulnerability assessment platform. Scan only systems you own or have written permission to test.",
+)
 app.add_middleware(CORSMiddleware, allow_origins=settings.CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"])
 
 _hits: dict[str, deque] = defaultdict(deque)
@@ -42,6 +46,8 @@ async def rate_limit(request: Request, call_next):
 
 
 app.include_router(scans.router)
+app.include_router(applications.router)
+app.include_router(activities.router)
 
 
 @app.get("/api/health")

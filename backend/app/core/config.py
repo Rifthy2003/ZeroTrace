@@ -9,16 +9,23 @@ from typing import List
 
 
 class Settings(BaseSettings):
-    APP_NAME: str = "Automated Web Vulnerability Scanner"
+    APP_NAME: str = "ZeroTrace — Automated Web Vulnerability Scanner"
     ENV: str = "development"
 
     DATABASE_URL: str = "sqlite:///./scanner.db"
 
     # --- Safety / SSRF protection -------------------------------------------------
     # When False (default), the scanner refuses to target private/loopback/link-local
-    # addresses. Only flip this on for an isolated local lab (e.g. the bundled
-    # vulnerable-test-app) and never in a shared/production deployment.
+    # addresses. Keep False in production deployments.
     ALLOW_PRIVATE_NETWORK_TARGETS: bool = False
+
+    # Dedicated local-development testing option for scanning host-running projects from Docker.
+    # Disabled by default. When explicitly enabled, permits authorized host targets
+    # (host.docker.internal, localhost, 127.0.0.1) on user-selected ports,
+    # preserving DNS resolution, resolved-IP checks, redirect validation,
+    # and SSRF protection for all other destinations.
+    ALLOW_LOCAL_DEV_TARGET: bool = False
+    LOCAL_DEV_ALLOWED_HOSTS: List[str] = ["host.docker.internal", "localhost", "127.0.0.1"]
 
     # Hard ceiling on crawl size regardless of what the user requests.
     MAX_CRAWL_DEPTH_LIMIT: int = 5
@@ -40,6 +47,7 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        extra = "ignore"
 
 
 settings = Settings()

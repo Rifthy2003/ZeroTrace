@@ -45,6 +45,11 @@ class Finding(Base):
     impact = Column(Text, nullable=True)
     remediation = Column(Text, nullable=True)
 
+    status = Column(String, default="open", nullable=False, index=True)
+    fingerprint = Column(String, index=True, nullable=True)
+    status_note = Column(Text, nullable=True)
+    status_updated_at = Column(DateTime, nullable=True)
+
     timestamp = Column(DateTime, default=datetime.utcnow)
 
     scan = relationship("Scan", back_populates="findings")

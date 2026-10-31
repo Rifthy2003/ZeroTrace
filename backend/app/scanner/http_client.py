@@ -13,7 +13,7 @@ class SafeHTTPClient:
             timeout=settings.REQUEST_TIMEOUT_SECONDS,
             follow_redirects=False,  # scanners inspect redirects explicitly
             headers={
-                "User-Agent": "AuthorizedWebVulnScanner/1.0 (+educational-security-tool)"
+                "User-Agent": "ZeroTrace-Scanner/1.0 (+https://zerotrace.local; automated-web-vulnerability-scanner)"
             },
         )
 

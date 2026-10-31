@@ -16,7 +16,10 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-scanner}:${POSTGRES_PASSWORD:-scanner_dev_password}@database:5432/${POSTGRES_DB:-scanner}
       ALLOW_PRIVATE_NETWORK_TARGETS: ${ALLOW_PRIVATE_NETWORK_TARGETS:-false}
+      ALLOW_LOCAL_DEV_TARGET: ${ALLOW_LOCAL_DEV_TARGET:-false}
       CORS_ORIGINS: '["http://localhost:3000","http://localhost:5173"]'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       database: { condition: service_healthy }
     ports: ["8000:8000"]
@@ -25,13 +28,6 @@ services:
     build: ./frontend
     depends_on: [backend]
     ports: ["3000:80"]
-
-  # Optional lab target. Start with: docker compose --profile lab up --build
-  # and set ALLOW_PRIVATE_NETWORK_TARGETS=true, then scan http://vulnerable-test-app:9000
-  vulnerable-test-app:
-    build: ./vulnerable-test-app
-    profiles: ["lab"]
-    ports: ["9000:9000"]
 
 volumes:
   pgdata:
