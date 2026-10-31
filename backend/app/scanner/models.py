@@ -4,7 +4,7 @@ These are converted to Finding ORM rows by the engine once a scan completes
 (or incrementally, module by module).
 """
 from dataclasses import dataclass, field
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 
 
 @dataclass
@@ -42,3 +42,8 @@ class ScanFinding:
     remediation: str
     parameter: Optional[str] = None
     owasp_category: Optional[str] = None
+    cwe_id: Optional[str] = None
+    mitre_attack: Optional[str] = None
+    detection_status: Optional[str] = None
+    raw_instances: int = 1
+    evidence_details: Dict[str, Any] = field(default_factory=dict)

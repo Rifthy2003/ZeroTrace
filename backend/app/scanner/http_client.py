@@ -8,8 +8,9 @@ from app.core.config import settings
 
 
 class SafeHTTPClient:
-    def __init__(self, request_delay: float = 0.25):
+    def __init__(self, request_delay: float = 0.25, transport=None):
         self._client = httpx.AsyncClient(
+            transport=transport,
             timeout=settings.REQUEST_TIMEOUT_SECONDS,
             follow_redirects=False,  # scanners inspect redirects explicitly
             headers={

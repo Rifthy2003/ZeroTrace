@@ -4,12 +4,15 @@ Browser-based crawler and SPA route discovery for ZeroTrace.
 Provides Playwright-based headless browser crawling for client-rendered applications
 (Flutter Web, React, Vue, Angular, Vite, Next.js). Discovers hash-based routes
 (e.g., /#/welcome, /#/login, /#/signup, /#/dashboard), verifies route accessibility,
-distinguishes protected routes requiring authentication, and tracks:
+discovers DOM-rendered forms, form action endpoints, search fields, input elements,
+and tracks:
 - routes_discovered
 - routes_visited
 - routes_tested
 - routes_failed
 - routes_auth_required
+- forms_discovered
+- parameters_discovered
 
 Adheres strictly to safety rules:
 - Does not submit forms or perform state-changing actions automatically.
@@ -20,8 +23,9 @@ Adheres strictly to safety rules:
 import asyncio
 import logging
 import re
-from typing import Dict, List, Optional, Set, Tuple
-from urllib.parse import urljoin, urlparse
+from typing import Dict, List, Optional, Set, Tuple, Any
+from urllib.parse import urljoin, urlparse, parse_qs
+from bs4 import BeautifulSoup
 
 from app.core.ssrf_protection import is_same_origin
 from app.scanner.models import DiscoveredEndpoint, DiscoveredParameter
@@ -76,7 +80,10 @@ class BrowserCrawler:
         self.routes_failed: Set[str] = set()
         self.routes_auth_required: Set[str] = set()
 
-    async def crawl(self) -> Tuple[List[DiscoveredEndpoint], Dict[str, List[str]]]:
+        self.forms_discovered: int = 0
+        self.parameters_discovered: int = 0
+
+    async def crawl(self) -> Tuple[List[DiscoveredEndpoint], Dict[str, Any]]:
         """
         Run browser discovery. Attempts Playwright headless execution first;
         if Playwright is unavailable, falls back to static bundle analysis.
@@ -88,17 +95,23 @@ class BrowserCrawler:
             logger.warning("Playwright browser crawling failed (%s). Falling back to static bundle analysis.", exc)
             endpoints = await self._crawl_with_static_bundle_fallback()
 
+        # Tally total parameters discovered
+        total_params = sum(len(ep.parameters) for ep in endpoints)
+        self.parameters_discovered = max(self.parameters_discovered, total_params)
+
         metrics = {
             "routes_discovered": sorted(list(self.routes_discovered)),
             "routes_visited": sorted(list(self.routes_visited)),
             "routes_tested": sorted(list(self.routes_tested)),
             "routes_failed": sorted(list(self.routes_failed)),
             "routes_auth_required": sorted(list(self.routes_auth_required)),
+            "forms_discovered": self.forms_discovered,
+            "parameters_discovered": self.parameters_discovered,
         }
         return endpoints, metrics
 
     async def _crawl_with_playwright(self) -> List[DiscoveredEndpoint]:
-        """Launch Playwright Chromium to render JavaScript and discover routes."""
+        """Launch Playwright Chromium to render JavaScript, discover routes, forms, and inputs."""
         endpoints: List[DiscoveredEndpoint] = []
 
         try:
@@ -129,7 +142,6 @@ class BrowserCrawler:
             try:
                 await page.goto(self.base_url, wait_until="networkidle", timeout=int(self.timeout_seconds * 1000))
             except Exception:
-                # If networkidle times out (e.g. streaming sockets or workers), fallback to domcontentloaded
                 await page.goto(self.base_url, wait_until="domcontentloaded", timeout=int(self.timeout_seconds * 1000))
 
             await asyncio.sleep(2.0)
@@ -184,8 +196,31 @@ class BrowserCrawler:
                     else:
                         self.routes_tested.add(route)
 
-                    # Extract form fields for scanning without submitting forms
-                    params = await self._extract_inputs(page)
+                    # Extract form elements, actions, and inputs from the rendered DOM
+                    forms_data, standalone_params = await self._extract_forms_and_inputs(page)
+                    if forms_data:
+                        self.forms_discovered += len(forms_data)
+
+                    # Collect parameters for the GET page endpoint
+                    page_params: List[DiscoveredParameter] = list(standalone_params)
+
+                    # Also parse query parameters from the URL
+                    parsed_target = urlparse(target_url)
+                    for q_name, q_vals in parse_qs(parsed_target.query).items():
+                        page_params.append(
+                            DiscoveredParameter(name=q_name, location="query", sample_value=q_vals[0] if q_vals else None)
+                        )
+
+                    # Attach form inputs to the page endpoint
+                    for f in forms_data:
+                        for inp in f.get("inputs", []):
+                            page_params.append(
+                                DiscoveredParameter(
+                                    name=inp["name"],
+                                    location="body" if f.get("method") == "POST" else "query",
+                                    sample_value=inp.get("value") or None,
+                                )
+                            )
 
                     ep = DiscoveredEndpoint(
                         url=target_url,
@@ -198,10 +233,37 @@ class BrowserCrawler:
                             "x-zerotrace-auth-status": "protected" if is_auth_required else "public",
                         },
                         html=page_html,
-                        parameters=params,
+                        parameters=page_params,
+                        has_form=bool(forms_data),
                         redirected_to=current_url if current_url != target_url else None,
                     )
                     endpoints.append(ep)
+
+                    # If forms specify explicit action targets, register those action endpoints as distinct targets
+                    for f in forms_data:
+                        action_raw = f.get("action")
+                        method = f.get("method", "GET").upper()
+                        resolved_action = urljoin(current_url, action_raw) if action_raw else current_url
+
+                        if is_same_origin(self.base_url, resolved_action):
+                            form_params = [
+                                DiscoveredParameter(
+                                    name=inp["name"],
+                                    location="body" if method == "POST" else "query",
+                                    sample_value=inp.get("value") or None,
+                                )
+                                for inp in f.get("inputs", [])
+                            ]
+                            # Create separate endpoint for form submission if method is POST or action differs
+                            if method == "POST" or resolved_action != target_url:
+                                endpoints.append(DiscoveredEndpoint(
+                                    url=resolved_action,
+                                    method=method,
+                                    status_code=200,
+                                    content_type="application/x-www-form-urlencoded" if method == "POST" else "text/html",
+                                    parameters=form_params,
+                                    has_form=True,
+                                ))
 
                 except Exception as exc:
                     logger.debug("Failed visiting route %s: %s", route, exc)
@@ -214,13 +276,12 @@ class BrowserCrawler:
     async def _crawl_with_static_bundle_fallback(self) -> List[DiscoveredEndpoint]:
         """
         Graceful fallback when headless browser is not available.
-        Inspects application scripts via HTTP and constructs endpoints for discovered routes.
+        Inspects application scripts and static HTML to discover routes, forms, and inputs.
         """
         import httpx
 
         endpoints: List[DiscoveredEndpoint] = []
         async with httpx.AsyncClient(timeout=self.timeout_seconds, follow_redirects=True) as client:
-            # 1. Fetch root page
             try:
                 root_res = await client.get(self.base_url)
                 root_html = root_res.text
@@ -229,7 +290,7 @@ class BrowserCrawler:
 
             self.routes_discovered.add("/")
 
-            # 2. Probe for known Flutter and JS script bundles
+            # Probe for known Flutter and JS script bundles
             candidate_scripts = [
                 "flutter_bootstrap.js",
                 "packages/smartfarming/main.dart.lib.js",
@@ -250,7 +311,24 @@ class BrowserCrawler:
             for common_route in COMMON_SPA_ROUTES:
                 self.routes_discovered.add(common_route)
 
-            # 3. Process routes
+            # Extract forms from static root HTML using BeautifulSoup
+            soup = BeautifulSoup(root_html, "html.parser")
+            forms = soup.find_all("form")
+            if forms:
+                self.forms_discovered += len(forms)
+
+            root_params: List[DiscoveredParameter] = []
+            for inp in soup.find_all(["input", "textarea", "select"]):
+                name = inp.get("name") or inp.get("id")
+                if name:
+                    root_params.append(
+                        DiscoveredParameter(
+                            name=name,
+                            location="query",
+                            sample_value=inp.get("value"),
+                        )
+                    )
+
             for route in sorted(list(self.routes_discovered))[: self.max_urls]:
                 target_url = self._build_route_url(route)
                 self.routes_visited.add(route)
@@ -271,8 +349,32 @@ class BrowserCrawler:
                         "x-zerotrace-auth-status": "protected" if is_auth_required else "public",
                     },
                     html=root_html,
+                    parameters=list(root_params),
+                    has_form=bool(forms),
                 )
                 endpoints.append(ep)
+
+                # Add distinct form endpoints
+                for form in forms:
+                    action = form.get("action") or ""
+                    method = (form.get("method") or "GET").upper()
+                    resolved = urljoin(target_url, action) if action else target_url
+                    if is_same_origin(self.base_url, resolved) and method == "POST":
+                        f_params = []
+                        for finp in form.find_all(["input", "textarea", "select"]):
+                            fn = finp.get("name") or finp.get("id")
+                            if fn:
+                                f_params.append(
+                                    DiscoveredParameter(name=fn, location="body", sample_value=finp.get("value"))
+                                )
+                        endpoints.append(DiscoveredEndpoint(
+                            url=resolved,
+                            method="POST",
+                            status_code=200,
+                            content_type="application/x-www-form-urlencoded",
+                            parameters=f_params,
+                            has_form=True,
+                        ))
 
         return endpoints
 
@@ -293,14 +395,14 @@ class BrowserCrawler:
         """Extract route definitions from JavaScript bundles, MaterialApp, and routers."""
         routes: Set[str] = set()
 
-        # Flutter MaterialApp routes list: routes: new ... ["/", ..., "/welcome", ..., "/login"]
+        # Flutter MaterialApp routes list
         routes_map_match = re.search(r"routes:\s*new\s*[^,]+,\s*\[(.*?)\]\)", text, re.DOTALL)
         if routes_map_match:
             extracted = re.findall(r'"(/[a-zA-Z0-9_\-]+)"', routes_map_match.group(1))
             for r in extracted:
                 routes.add(f"/#{r}" if not r.startswith("/#") else r)
 
-        # Flutter onGenerateRoute: settings.name === "/home"
+        # Flutter onGenerateRoute
         for match in re.finditer(r'settings(?:\.name|\.arguments|\s*===)\s*===\s*"(/[a-zA-Z0-9_\-]+)"', text):
             r = match.group(1)
             routes.add(f"/#{r}" if not r.startswith("/#") else r)
@@ -310,38 +412,28 @@ class BrowserCrawler:
             r = match.group(1)
             routes.add(f"/#{r}" if not r.startswith("/#") else r)
 
-        # Generic hash routes in strings: "/#/..."
-        for match in re.finditer(r'"(/#[a-zA-Z0-9_\-]+)"', text):
-            routes.add(match.group(1))
-
         return routes
 
     def _build_route_url(self, route: str) -> str:
-        """Construct absolute URL for a route relative to base_url."""
-        if route == "/":
-            return self.base_url
-        clean_route = route.lstrip("/")
-        return urljoin(self.base_url, clean_route)
+        """Construct a full URL for visiting a candidate route."""
+        clean_base = self.base_url.rstrip("/")
+        if route.startswith("/#/"):
+            return f"{clean_base}{route}"
+        if route.startswith("#/"):
+            return f"{clean_base}/{route}"
+        if route.startswith("/"):
+            return f"{clean_base}{route}"
+        return f"{clean_base}/{route}"
 
     def _check_auth_required(self, route: str, current_url: str, html: str) -> bool:
-        """
-        Determine honestly if a route requires authentication:
-        - Check if destination URL redirected away from protected page to login/welcome
-        - Check if route matches authenticated zones (/home, /dashboard, /profile)
-        - Check for auth error messages or sign-in prompts in rendered content
-        """
         route_lower = route.lower()
-
-        # Check known protected patterns (e.g. /home, /dashboard, /admin, /doctor)
         for pattern in AUTH_REQUIRED_PATTERNS:
             if pattern.search(route_lower):
                 return True
 
-        # Check for unauthenticated redirection: tried to visit protected page but got sent to login/welcome
         if "/login" in current_url.lower() and not ("/login" in route_lower or "/signup" in route_lower):
             return True
 
-        # Check for explicit unauthenticated challenge indicators
         auth_challenge_keywords = [
             "please sign in",
             "please log in",
@@ -357,29 +449,52 @@ class BrowserCrawler:
 
         return False
 
-    async def _extract_inputs(self, page) -> List[DiscoveredParameter]:
-        """Extract input element names without submitting or modifying forms."""
-        params: List[DiscoveredParameter] = []
-        try:
-            inputs = await page.eval_on_selector_all(
-                "input, textarea, select",
-                """elements => elements.map(e => ({
-                    name: e.getAttribute('name') || e.getAttribute('id') || e.getAttribute('placeholder') || 'input',
-                    type: e.getAttribute('type') || 'text',
-                    value: e.value || ''
-                }))""",
-            )
-            for inp in inputs:
-                name = inp.get("name")
-                if name:
-                    params.append(
-                        DiscoveredParameter(
-                            name=name,
-                            location="body",
-                            sample_value=inp.get("value") or None,
-                        )
-                    )
-        except Exception:
-            pass
-        return params
+    async def _extract_forms_and_inputs(self, page) -> Tuple[List[Dict[str, Any]], List[DiscoveredParameter]]:
+        """Extract all DOM forms, actions, methods, and standalone inputs."""
+        forms_data: List[Dict[str, Any]] = []
+        standalone_params: List[DiscoveredParameter] = []
 
+        try:
+            # 1. Extract structured forms
+            forms_data = await page.evaluate("""
+            () => {
+                const forms = Array.from(document.querySelectorAll('form'));
+                return forms.map(f => {
+                    const action = f.getAttribute('action') || '';
+                    const method = (f.getAttribute('method') || 'GET').toUpperCase();
+                    const inputs = Array.from(f.querySelectorAll('input, textarea, select')).map(el => ({
+                        name: el.getAttribute('name') || el.getAttribute('id') || '',
+                        type: el.getAttribute('type') || 'text',
+                        value: el.value || el.getAttribute('value') || '',
+                        placeholder: el.getAttribute('placeholder') || ''
+                    })).filter(inp => inp.name && inp.name.length > 0);
+                    return { action, method, inputs };
+                });
+            }
+            """)
+
+            # 2. Extract standalone search inputs or inputs outside forms
+            standalone_inputs = await page.evaluate("""
+            () => {
+                const inputs = Array.from(document.querySelectorAll('input:not(form input), textarea:not(form textarea), select:not(form select)'));
+                return inputs.map(el => ({
+                    name: el.getAttribute('name') || el.getAttribute('id') || el.getAttribute('placeholder') || 'search',
+                    type: el.getAttribute('type') || 'text',
+                    value: el.value || el.getAttribute('value') || ''
+                })).filter(inp => inp.name && inp.name.length > 0);
+            }
+            """)
+
+            for inp in standalone_inputs:
+                standalone_params.append(
+                    DiscoveredParameter(
+                        name=inp["name"],
+                        location="query",
+                        sample_value=inp.get("value") or None,
+                    )
+                )
+
+        except Exception as exc:
+            logger.debug("Error extracting forms from page: %s", exc)
+
+        return forms_data, standalone_params

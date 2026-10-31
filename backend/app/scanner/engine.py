@@ -5,6 +5,7 @@ Runs as an asyncio background task so the API never blocks.
 import asyncio
 import logging
 from datetime import datetime
+from typing import Dict, List, Any, Set
 from urllib.parse import urlparse
 
 from app.core.config import settings
@@ -23,14 +24,74 @@ from app.services.remediation import (
     record_activity,
 )
 from app.scanner.scanners import (
-    security_headers, cookie_security, directory_listing, sensitive_files,
-    information_disclosure, csrf, xss, sql_injection, open_redirect,
+    security_headers,
+    cookie_security,
+    directory_listing,
+    sensitive_files,
+    information_disclosure,
+    csrf,
+    xss,
+    sql_injection,
+    open_redirect,
+    command_injection,
+    ssti,
+    path_traversal,
+    cors,
+    clickjacking,
+    auth_security,
+    graphql,
 )
 
 logger = logging.getLogger("scanner.engine")
 
 # scan_id -> asyncio.Task, used for cancellation
 RUNNING_TASKS: dict[str, asyncio.Task] = {}
+
+ALL_KNOWN_MODULES = [
+    "sql_injection",
+    "xss",
+    "csrf",
+    "security_headers",
+    "cookie_security",
+    "directory_listing",
+    "sensitive_files",
+    "open_redirect",
+    "information_disclosure",
+    "command_injection",
+    "ssti",
+    "path_traversal",
+    "cors",
+    "clickjacking",
+    "auth_security",
+    "graphql",
+]
+
+INPUT_DEPENDENT_MODULES = {
+    "sql_injection",
+    "xss",
+    "command_injection",
+    "ssti",
+    "path_traversal",
+}
+
+MODULE_DISPLAY_NAMES = {
+    "sql_injection": "SQL Injection",
+    "xss": "Cross-Site Scripting (XSS)",
+    "csrf": "Cross-Site Request Forgery (CSRF)",
+    "security_headers": "Security Headers",
+    "cookie_security": "Cookie Security",
+    "directory_listing": "Directory Listing",
+    "sensitive_files": "Sensitive Files & Secrets",
+    "open_redirect": "Open Redirect",
+    "information_disclosure": "Information Disclosure",
+    "command_injection": "Command Injection",
+    "ssti": "Server-Side Template Injection (SSTI)",
+    "path_traversal": "Path Traversal",
+    "cors": "CORS Misconfiguration",
+    "clickjacking": "Clickjacking Protection",
+    "auth_security": "Authentication & Access Security",
+    "graphql": "GraphQL Security",
+}
 
 
 def _confidence_enum(value: str) -> Confidence:
@@ -71,10 +132,13 @@ async def run_scan(scan_id: str) -> None:
             metadata={"target_url": target_base},
         )
 
-        modules = set(scan.modules or [])
+        modules = set(scan.modules or ALL_KNOWN_MODULES)
         depth = min(scan.max_depth, settings.MAX_CRAWL_DEPTH_LIMIT)
         max_urls = min(scan.max_urls, settings.MAX_URLS_LIMIT)
         delay = max(scan.request_delay, 0.0)
+
+        # Execution Audit Log
+        execution_logs: List[Dict[str, Any]] = []
 
         # ---- Crawl ---------------------------------------------------------
         scan.current_module = "crawler"
@@ -83,14 +147,49 @@ async def run_scan(scan_id: str) -> None:
         async def on_endpoint(ep):
             scan.urls_discovered = (scan.urls_discovered or 0) + 1
             scan.parameters_found = (scan.parameters_found or 0) + len(ep.parameters)
-            row = Endpoint(scan_id=scan_id, url=ep.url, method=ep.method, status_code=ep.status_code,
-                           content_type=ep.content_type, redirected_to=ep.redirected_to,
-                           response_headers=ep.response_headers, has_form=str(ep.has_form).lower())
+            row = Endpoint(
+                scan_id=scan_id,
+                url=ep.url,
+                method=ep.method,
+                status_code=ep.status_code,
+                content_type=ep.content_type,
+                redirected_to=ep.redirected_to,
+                response_headers=ep.response_headers,
+                has_form=str(ep.has_form).lower(),
+            )
             db.add(row)
             db.flush()
             for p in ep.parameters:
                 db.add(Parameter(endpoint_id=row.id, name=p.name, location=p.location, sample_value=p.sample_value))
-            logger.info("Endpoint discovered url=%s", ep.url)
+                execution_logs.append({
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "event": "parameter_discovered",
+                    "url": ep.url,
+                    "method": ep.method,
+                    "parameter": p.name,
+                    "location": p.location,
+                    "sample_value": (p.sample_value or "")[:30],
+                })
+
+            execution_logs.append({
+                "timestamp": datetime.utcnow().isoformat(),
+                "event": "url_discovered",
+                "url": ep.url,
+                "method": ep.method,
+                "status_code": ep.status_code,
+                "content_type": ep.content_type,
+                "has_form": ep.has_form,
+                "params_count": len(ep.parameters),
+            })
+            if ep.has_form:
+                execution_logs.append({
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "event": "form_discovered",
+                    "url": ep.url,
+                    "method": ep.method,
+                    "form_parameters": [p.name for p in ep.parameters if p.location in ("form", "body")],
+                })
+            logger.info("Endpoint discovered url=%s method=%s params=%d", ep.url, ep.method, len(ep.parameters))
             db.commit()
 
         crawler = Crawler(
@@ -103,55 +202,287 @@ async def run_scan(scan_id: str) -> None:
         endpoints = await crawler.crawl(on_endpoint_discovered=on_endpoint)
         scan.route_summary = crawler.route_metrics
         db.commit()
+
+        forms_cnt = crawler.route_metrics.get("forms_discovered", 0)
+        params_discovered_cnt = sum(len(e.parameters) for e in endpoints)
+        scan.parameters_found = params_discovered_cnt
+
         logger.info(
-            "Crawl finished endpoints=%d routes_discovered=%d",
+            "Crawl finished endpoints=%d routes_discovered=%d forms_discovered=%d parameters_discovered=%d",
             len(endpoints),
             len(crawler.route_metrics.get("routes_discovered", [])),
+            forms_cnt,
+            params_discovered_cnt,
         )
 
-        # ---- Modules ---------------------------------------------------------
+        # ---- Module Execution Tracking ---------------------------------------
+        module_findings_count: Dict[str, int] = {m: 0 for m in ALL_KNOWN_MODULES}
+        module_tested_endpoints: Dict[str, int] = {m: 0 for m in ALL_KNOWN_MODULES}
+        module_parameters_tested: Dict[str, int] = {m: 0 for m in ALL_KNOWN_MODULES}
+        tested_param_keys: Set[str] = set()
+
         client = SafeHTTPClient(delay)
         all_findings = []
-        per_endpoint = [m for m in ("security_headers", "cookie_security", "directory_listing",
-                                    "information_disclosure", "csrf", "xss", "sql_injection", "open_redirect")
-                        if m in modules]
-        total_steps = max(1, len(endpoints) * len(per_endpoint) + (1 if "sensitive_files" in modules else 0))
+
+        per_endpoint_modules = [
+            m for m in (
+                "security_headers",
+                "cookie_security",
+                "directory_listing",
+                "information_disclosure",
+                "csrf",
+                "xss",
+                "sql_injection",
+                "open_redirect",
+                "command_injection",
+                "ssti",
+                "path_traversal",
+                "cors",
+                "clickjacking",
+                "auth_security",
+            )
+            if m in modules
+        ]
+
+        total_steps = max(
+            1,
+            len(endpoints) * len(per_endpoint_modules)
+            + (1 if "sensitive_files" in modules else 0)
+            + (1 if "graphql" in modules else 0),
+        )
         step = 0
 
+        # ---- Run Per-Endpoint Modules ---------------------------------------
         for ep in endpoints:
-            for module in per_endpoint:
+            is_auth_required = (
+                ep.status_code in (401, 403)
+                or ep.response_headers.get("x-zerotrace-auth-status") == "protected"
+            )
+
+            # Extract testable parameters for input-dependent modules
+            testable_params = [
+                p for p in ep.parameters
+                if p.name and p.name.lower() not in {"csrf", "token", "_csrf", "_token"}
+            ]
+
+            for module in per_endpoint_modules:
                 scan.current_module = module
-                if module == "security_headers":
-                    found = security_headers.scan(ep)
-                elif module == "cookie_security":
-                    found = cookie_security.scan(ep)
-                elif module == "directory_listing":
-                    found = directory_listing.scan(ep)
-                elif module == "information_disclosure":
-                    found = information_disclosure.scan(ep)
-                elif module == "csrf":
-                    found = csrf.scan(ep, ep.html)
-                elif module == "xss":
-                    found = await xss.scan(ep, client)
-                elif module == "sql_injection":
-                    found = await sql_injection.scan(ep, client)
+                found = []
+
+                # Check if module requires input parameters
+                if module in INPUT_DEPENDENT_MODULES:
+                    if is_auth_required:
+                        execution_logs.append({
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "event": "module_skipped",
+                            "module": module,
+                            "url": ep.url,
+                            "reason": "Authentication required (HTTP 401/403 or protected route)",
+                        })
+                        step += 1
+                        continue
+
+                    if not testable_params:
+                        execution_logs.append({
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "event": "module_skipped",
+                            "module": module,
+                            "url": ep.url,
+                            "reason": "No testable input parameters discovered on endpoint",
+                        })
+                        step += 1
+                        continue
+
+                    # Execute input module
+                    module_tested_endpoints[module] += 1
+                    module_parameters_tested[module] += len(testable_params)
+                    for p in testable_params:
+                        param_key = f"{ep.method}:{ep.url}:{p.name}:{p.location}"
+                        tested_param_keys.add(param_key)
+
+                    if module == "sql_injection":
+                        found = await sql_injection.scan(ep, client)
+                    elif module == "xss":
+                        found = await xss.scan(ep, client)
+                    elif module == "command_injection":
+                        found = await command_injection.scan(ep, client)
+                    elif module == "ssti":
+                        found = await ssti.scan(ep, client)
+                    elif module == "path_traversal":
+                        found = await path_traversal.scan(ep, client)
+
+                    # Log parameter testing results
+                    for p in testable_params:
+                        p_findings = [f for f in found if f.parameter == p.name]
+                        execution_logs.append({
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "event": "parameter_tested",
+                            "module": module,
+                            "url": ep.url,
+                            "method": ep.method,
+                            "parameter": p.name,
+                            "location": p.location,
+                            "result": f"Finding detected: {p_findings[0].type} ({p_findings[0].severity})" if p_findings else "Safe (No indicators observed)",
+                        })
+
                 else:
-                    found = await open_redirect.scan(ep, client)
+                    # Non-input dependent endpoint modules
+                    module_tested_endpoints[module] += 1
+
+                    if module == "security_headers":
+                        found = security_headers.scan(ep)
+                    elif module == "cookie_security":
+                        found = cookie_security.scan(ep)
+                    elif module == "directory_listing":
+                        found = directory_listing.scan(ep)
+                    elif module == "information_disclosure":
+                        found = information_disclosure.scan(ep)
+                    elif module == "csrf":
+                        found = csrf.scan(ep, ep.html)
+                    elif module == "open_redirect":
+                        found = await open_redirect.scan(ep, client)
+                    elif module == "cors":
+                        found = await cors.scan(ep, client)
+                    elif module == "clickjacking":
+                        found = clickjacking.scan(ep)
+                    elif module == "auth_security":
+                        found = auth_security.scan(ep)
+
+                    execution_logs.append({
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "event": "endpoint_tested",
+                        "module": module,
+                        "url": ep.url,
+                        "method": ep.method,
+                        "result": f"{len(found)} finding(s)" if found else "Clean",
+                    })
+
                 if found:
-                    logger.warning("Potential finding detected module=%s url=%s count=%d", module, ep.url, len(found))
-                all_findings.extend(found)
+                    module_findings_count[module] += len(found)
+                    logger.warning("Finding detected module=%s url=%s count=%d", module, ep.url, len(found))
+                    all_findings.extend(found)
+
                 step += 1
                 scan.progress_percent = round(100 * step / total_steps, 1)
                 scan.findings_count = len(all_findings)
+
             scan.urls_scanned = (scan.urls_scanned or 0) + 1
             db.commit()
-            await asyncio.sleep(0)  # yield so cancellation can be delivered
+            await asyncio.sleep(0)  # yield for cancellation
 
+        # ---- Target-Level Modules -------------------------------------------
         if "sensitive_files" in modules:
             scan.current_module = "sensitive_files"
+            module_tested_endpoints["sensitive_files"] = len(endpoints)
             db.commit()
-            all_findings.extend(await sensitive_files.scan(scan.target.base_url, client))
+            s_found = await sensitive_files.scan(scan.target.base_url, client)
+            if s_found:
+                module_findings_count["sensitive_files"] += len(s_found)
+                all_findings.extend(s_found)
+            execution_logs.append({
+                "timestamp": datetime.utcnow().isoformat(),
+                "event": "target_module_tested",
+                "module": "sensitive_files",
+                "url": scan.target.base_url,
+                "result": f"{len(s_found)} sensitive file finding(s)" if s_found else "No exposed files found",
+            })
+
+        is_graphql_applicable = False
+        if "graphql" in modules:
+            scan.current_module = "graphql"
+            db.commit()
+            g_found, is_graphql_applicable = await graphql.scan(scan.target.base_url, client)
+            if is_graphql_applicable:
+                module_tested_endpoints["graphql"] = 3
+                if g_found:
+                    module_findings_count["graphql"] += len(g_found)
+                    all_findings.extend(g_found)
+                execution_logs.append({
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "event": "target_module_tested",
+                    "module": "graphql",
+                    "url": scan.target.base_url,
+                    "result": f"{len(g_found)} GraphQL issue(s)" if g_found else "GraphQL tested",
+                })
+            else:
+                module_tested_endpoints["graphql"] = 0
+                execution_logs.append({
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "event": "target_module_skipped",
+                    "module": "graphql",
+                    "url": scan.target.base_url,
+                    "reason": "No GraphQL endpoints found on target (Not Applicable)",
+                })
+
         await client.close()
+
+        # ---- Build Accurate Coverage Matrix ---------------------------------
+        total_unique_params_tested = len(tested_param_keys)
+        module_matrix = []
+
+        for m in ALL_KNOWN_MODULES:
+            name = MODULE_DISPLAY_NAMES.get(m, m.replace("_", " ").title())
+            f_count = module_findings_count.get(m, 0)
+            ep_tested = module_tested_endpoints.get(m, 0)
+            param_tested = module_parameters_tested.get(m, 0)
+
+            if m not in modules:
+                status = "Not Tested"
+                reason = "Module not selected in scan configuration"
+            elif m == "graphql":
+                if is_graphql_applicable:
+                    status = "Tested"
+                    reason = f"Tested GraphQL introspection across {ep_tested} endpoints"
+                else:
+                    status = "Not Applicable"
+                    reason = "No GraphQL endpoint discovered on target"
+            elif m in INPUT_DEPENDENT_MODULES:
+                if param_tested > 0:
+                    status = "Tested"
+                    reason = f"Tested {param_tested} parameter(s) across {ep_tested} endpoint(s)"
+                else:
+                    status = "Incomplete"
+                    reason = "No eligible input parameters discovered on crawled pages"
+            else:
+                if ep_tested > 0:
+                    status = "Tested"
+                    reason = f"Tested across {ep_tested} endpoint(s)"
+                else:
+                    status = "Not Tested"
+                    reason = "No applicable endpoints tested"
+
+            module_matrix.append({
+                "module": m,
+                "name": name,
+                "status": status,
+                "findings_count": f_count,
+                "endpoints_tested": ep_tested,
+                "parameters_tested": param_tested,
+                "reason": reason,
+            })
+
+        tested_cnt = sum(1 for item in module_matrix if item["status"] == "Tested")
+        incomplete_cnt = sum(1 for item in module_matrix if item["status"] == "Incomplete")
+        not_tested_cnt = sum(1 for item in module_matrix if item["status"] == "Not Tested")
+        na_cnt = sum(1 for item in module_matrix if item["status"] == "Not Applicable")
+        applicable_total = max(1, len(module_matrix) - na_cnt)
+        coverage_pct = round(100.0 * tested_cnt / applicable_total, 1)
+
+        scan.coverage_summary = {
+            "modules_total": len(module_matrix),
+            "modules_tested": tested_cnt,
+            "modules_incomplete": incomplete_cnt,
+            "modules_not_tested": not_tested_cnt,
+            "modules_not_applicable": na_cnt,
+            "endpoints_discovered": len(endpoints),
+            "endpoints_tested": scan.urls_scanned or len(endpoints),
+            "forms_discovered": forms_cnt,
+            "parameters_discovered": params_discovered_cnt,
+            "parameters_tested": total_unique_params_tested,
+            "coverage_percentage": coverage_pct,
+            "module_matrix": module_matrix,
+            "execution_logs": execution_logs[-100:],  # preserve latest 100 execution audit records
+        }
 
         # ---- Correlate + store -------------------------------------------------
         base_url = scan.target.base_url if scan.target else ""
@@ -183,12 +514,18 @@ async def run_scan(scan_id: str) -> None:
                 remediation=f.remediation,
                 fingerprint=fp,
                 status="open",
+                cwe_id=f.cwe_id,
+                mitre_attack=f.mitre_attack,
+                detection_status=f.detection_status or "Confirmed",
+                raw_instances=getattr(f, "raw_instances", 1) or 1,
+                evidence_details=getattr(f, "evidence_details", {}) or {},
             ))
+
         db.add(ScanSummary(
             scan_id=scan_id,
             total_urls=len(endpoints),
             total_endpoints=len(endpoints),
-            total_parameters=scan.parameters_found or 0,
+            total_parameters=params_discovered_cnt,
             critical_count=counts[Severity.CRITICAL],
             high_count=counts[Severity.HIGH],
             medium_count=counts[Severity.MEDIUM],
@@ -210,11 +547,11 @@ async def run_scan(scan_id: str) -> None:
             db,
             event_type="scan_completed",
             title="Scan Completed",
-            description=f"Completed assessment for {base_url} ({len(final)} findings, {scan.urls_scanned} routes tested).",
+            description=f"Completed assessment for {base_url} ({len(final)} unique findings, {scan.urls_scanned} routes tested, {total_unique_params_tested} parameters tested).",
             scan_id=scan.id,
             application_id=scan.application_id,
             severity="success",
-            metadata={"findings_count": len(final), "urls_scanned": scan.urls_scanned},
+            metadata={"findings_count": len(final), "urls_scanned": scan.urls_scanned, "params_tested": total_unique_params_tested},
         )
         if rem_res.get("new_count", 0) > 0:
             record_activity(
@@ -238,40 +575,36 @@ async def run_scan(scan_id: str) -> None:
                 severity="success",
                 metadata={"resolved_count": rem_res["resolved_count"]},
             )
-        logger.info("Scan completed scan_id=%s findings=%d", scan_id, len(final))
+
+        logger.info(
+            "Scan completed successfully scan_id=%s unique_findings=%d params_tested=%d",
+            scan_id,
+            len(final),
+            total_unique_params_tested,
+        )
 
     except asyncio.CancelledError:
+        logger.info("Scan cancelled scan_id=%s", scan_id)
         scan.status = ScanStatus.CANCELLED
         scan.completed_at = datetime.utcnow()
         db.commit()
-        record_activity(
-            db,
-            event_type="scan_cancelled",
-            title="Scan Cancelled",
-            description=f"Scan cancelled for {scan.target.base_url if scan.target else 'target'}",
-            scan_id=scan.id,
-            application_id=scan.application_id,
-            severity="info",
-        )
-        logger.info("Scan cancelled scan_id=%s", scan_id)
-    except Exception as exc:  # noqa: BLE001
-        db.rollback()
-        scan = db.get(Scan, scan_id)
+    except Exception as exc:
+        logger.exception("Scan failed scan_id=%s err=%s", scan_id, exc)
         scan.status = ScanStatus.FAILED
         scan.error_message = str(exc)[:500]
         scan.completed_at = datetime.utcnow()
         db.commit()
-        record_activity(
-            db,
-            event_type="scan_failed",
-            title="Scan Failed",
-            description=f"Scan failed for {scan.target.base_url if scan.target else 'target'}: {scan.error_message}",
-            scan_id=scan.id,
-            application_id=scan.application_id,
-            severity="critical",
-            metadata={"error": scan.error_message},
-        )
-        logger.exception("Scan failed scan_id=%s", scan_id)
+        if scan.target:
+            record_activity(
+                db,
+                event_type="scan_failed",
+                title="Scan Failed",
+                description=f"Assessment failed for {scan.target.base_url}: {str(exc)[:120]}",
+                scan_id=scan.id,
+                application_id=scan.application_id,
+                severity="danger",
+                metadata={"error": str(exc)[:300]},
+            )
     finally:
         RUNNING_TASKS.pop(scan_id, None)
         db.close()

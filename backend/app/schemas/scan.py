@@ -13,6 +13,14 @@ AVAILABLE_MODULES = [
     "open_redirect",
     "information_disclosure",
     "cookie_security",
+    "command_injection",
+    "ssti",
+    "cors",
+    "clickjacking",
+    "path_traversal",
+    "auth_security",
+    "access_control",
+    "graphql",
 ]
 
 
@@ -60,6 +68,7 @@ class ScanResponse(BaseModel):
     modules: List[str]
     enable_browser_discovery: Optional[bool] = True
     route_summary: Optional[dict] = None
+    coverage_summary: Optional[dict] = None
     current_module: Optional[str] = None
     urls_discovered: int
     urls_scanned: int
@@ -95,6 +104,11 @@ class FindingResponse(BaseModel):
     fingerprint: Optional[str] = None
     status_note: Optional[str] = None
     status_updated_at: Optional[datetime] = None
+    cwe_id: Optional[str] = None
+    mitre_attack: Optional[str] = None
+    detection_status: Optional[str] = "Confirmed"
+    raw_instances: Optional[int] = 1
+    evidence_details: Optional[dict] = None
     timestamp: datetime
 
     class Config:
@@ -147,6 +161,7 @@ class CoverageResponse(BaseModel):
     routes_failed: List[str] = []
     routes_auth_required: List[str] = []
     limitations: List[str] = []
+    coverage_summary: Optional[dict] = None
 
 
 class RemediationResponse(BaseModel):

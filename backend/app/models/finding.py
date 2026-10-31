@@ -2,7 +2,7 @@ import uuid
 import enum
 from datetime import datetime
 
-from sqlalchemy import Column, String, DateTime, Enum, ForeignKey, Text
+from sqlalchemy import Column, String, DateTime, Enum, ForeignKey, Text, Integer, JSON
 from sqlalchemy.orm import relationship
 from app.database.session import Base
 
@@ -49,6 +49,12 @@ class Finding(Base):
     fingerprint = Column(String, index=True, nullable=True)
     status_note = Column(Text, nullable=True)
     status_updated_at = Column(DateTime, nullable=True)
+
+    cwe_id = Column(String, nullable=True)
+    mitre_attack = Column(String, nullable=True)
+    detection_status = Column(String, default="Confirmed", nullable=True)
+    raw_instances = Column(Integer, default=1, nullable=False)
+    evidence_details = Column(JSON, default=dict, nullable=True)
 
     timestamp = Column(DateTime, default=datetime.utcnow)
 

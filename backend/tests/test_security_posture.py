@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.database.session import init_db
 from app.models.finding import Confidence, Finding, Severity
 from app.models.scan import Scan, ScanStatus
 from app.models.target import Target
@@ -304,9 +305,9 @@ def test_pdf_report_generation():
 
 def test_api_security_posture_endpoint(monkeypatch):
     """Integration test for GET /api/scans/{scan_id}/security-posture."""
-    client = TestClient(app)
-
-    # Test 404 for non-existent scan
-    resp_404 = client.get("/api/scans/non-existent-id/security-posture")
-    assert resp_404.status_code == 404
+    init_db()
+    with TestClient(app) as client:
+        # Test 404 for non-existent scan
+        resp_404 = client.get("/api/scans/non-existent-id/security-posture")
+        assert resp_404.status_code == 404
 

@@ -52,6 +52,11 @@ def init_db():
                 conn.execute(text("ALTER TABLE scans ADD COLUMN application_id VARCHAR"))
             except Exception:
                 pass
+        if "coverage_summary" not in scan_cols:
+            try:
+                conn.execute(text("ALTER TABLE scans ADD COLUMN coverage_summary JSON"))
+            except Exception:
+                pass
 
         # targets table
         target_cols = get_existing_cols("targets")
@@ -86,6 +91,31 @@ def init_db():
         if "status_updated_at" not in finding_cols:
             try:
                 conn.execute(text(f"ALTER TABLE findings ADD COLUMN status_updated_at {timestamp_type}"))
+            except Exception:
+                pass
+        if "cwe_id" not in finding_cols:
+            try:
+                conn.execute(text("ALTER TABLE findings ADD COLUMN cwe_id VARCHAR"))
+            except Exception:
+                pass
+        if "mitre_attack" not in finding_cols:
+            try:
+                conn.execute(text("ALTER TABLE findings ADD COLUMN mitre_attack VARCHAR"))
+            except Exception:
+                pass
+        if "detection_status" not in finding_cols:
+            try:
+                conn.execute(text("ALTER TABLE findings ADD COLUMN detection_status VARCHAR DEFAULT 'Confirmed'"))
+            except Exception:
+                pass
+        if "raw_instances" not in finding_cols:
+            try:
+                conn.execute(text("ALTER TABLE findings ADD COLUMN raw_instances INTEGER DEFAULT 1"))
+            except Exception:
+                pass
+        if "evidence_details" not in finding_cols:
+            try:
+                conn.execute(text("ALTER TABLE findings ADD COLUMN evidence_details JSON"))
             except Exception:
                 pass
 

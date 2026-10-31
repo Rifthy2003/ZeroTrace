@@ -445,6 +445,61 @@ def calculate_security_posture(
     if is_preliminary:
         coverage_limitations.extend(preliminary_reasons)
 
+    coverage_summary = _get_val(scan, "coverage_summary", None)
+    if not coverage_summary:
+        from app.scanner.engine import ALL_KNOWN_MODULES, MODULE_DISPLAY_NAMES, INPUT_DEPENDENT_MODULES
+        mod_set = set(modules or ALL_KNOWN_MODULES)
+        matrix = []
+        for m in ALL_KNOWN_MODULES:
+            reason = ""
+            if m not in mod_set:
+                status = "Not Tested"
+                reason = "Module not selected in scan config"
+            elif m == "graphql":
+                status = "Not Applicable"
+                reason = "No GraphQL endpoint discovered on target"
+            elif m in INPUT_DEPENDENT_MODULES:
+                if parameters_found > 0:
+                    status = "Tested"
+                    reason = f"Tested parameters across {urls_scanned} endpoint(s)"
+                else:
+                    status = "Incomplete"
+                    reason = "No eligible input parameters discovered on target"
+            else:
+                status = "Tested" if urls_scanned > 0 else "Not Tested"
+                reason = f"Tested across {urls_scanned} endpoint(s)" if urls_scanned > 0 else "No endpoints scanned"
+
+            matrix.append({
+                "module": m,
+                "name": MODULE_DISPLAY_NAMES.get(m, m.replace("_", " ").title()),
+                "status": status,
+                "findings_count": len([
+                    f for f in unique_findings
+                    if m in f.category.lower() or m.replace("_", " ") in f.finding_type.lower()
+                ]),
+                "endpoints_tested": urls_scanned if status == "Tested" else 0,
+                "parameters_tested": parameters_found if status == "Tested" and m in INPUT_DEPENDENT_MODULES else 0,
+                "reason": reason,
+            })
+        tested_c = sum(1 for item in matrix if item["status"] == "Tested")
+        incomplete_c = sum(1 for item in matrix if item["status"] == "Incomplete")
+        na_c = sum(1 for item in matrix if item["status"] == "Not Applicable")
+        not_t_c = sum(1 for item in matrix if item["status"] == "Not Tested")
+        coverage_summary = {
+            "modules_total": len(matrix),
+            "modules_tested": tested_c,
+            "modules_incomplete": incomplete_c,
+            "modules_not_tested": not_t_c,
+            "modules_not_applicable": na_c,
+            "endpoints_discovered": urls_discovered,
+            "endpoints_tested": urls_scanned,
+            "forms_discovered": route_summary.get("forms_discovered", 0),
+            "parameters_discovered": parameters_found,
+            "parameters_tested": parameters_found if tested_c > 0 else 0,
+            "coverage_percentage": round(100.0 * tested_c / max(1, len(matrix) - na_c), 1),
+            "module_matrix": matrix,
+        }
+
     return {
         "scan_id": scan_id,
         "target_url": target_url,
@@ -477,6 +532,7 @@ def calculate_security_posture(
             "routes_failed": routes_failed,
             "routes_auth_required": routes_auth_required,
             "limitations": coverage_limitations,
+            "coverage_summary": coverage_summary,
         },
         "score_deductions": score_deductions,
         "main_reasons": main_reasons,

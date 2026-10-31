@@ -39,6 +39,8 @@ def _scan_response(scan: Scan) -> ScanResponse:
         data.application_name = scan.application.name
     if scan.started_at and scan.completed_at:
         data.duration_seconds = round((scan.completed_at - scan.started_at).total_seconds(), 1)
+    if not data.coverage_summary and hasattr(scan, "coverage_summary"):
+        data.coverage_summary = scan.coverage_summary
     return data
 
 
@@ -47,6 +49,20 @@ def _finding_response(f: Finding) -> FindingResponse:
     r.severity = f.severity.value if hasattr(f.severity, "value") else str(f.severity)
     r.confidence = f.confidence.value if hasattr(f.confidence, "value") else str(f.confidence)
     r.status = f.status or "open"
+    if not r.cwe_id or not r.mitre_attack:
+        from app.scanner.severity import CWE_MITRE_MAP
+        cwe, mitre = CWE_MITRE_MAP.get(r.type, ("CWE-200", "T1190"))
+        r.cwe_id = r.cwe_id or cwe
+        r.mitre_attack = r.mitre_attack or mitre
+    if not r.detection_status:
+        if "Potential" in r.type or "Heuristic" in r.type:
+            r.detection_status = "Potential"
+        elif r.confidence in ("Confirmed", "High confidence"):
+            r.detection_status = "Confirmed"
+        else:
+            r.detection_status = "Requires Manual Verification"
+    if not r.raw_instances:
+        r.raw_instances = 1
     return r
 
 

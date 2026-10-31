@@ -30,6 +30,7 @@ class Scan(Base):
     modules = Column(JSON, default=list)  # list of enabled module names
     enable_browser_discovery = Column(Boolean, default=True)
     route_summary = Column(JSON, default=dict)
+    coverage_summary = Column(JSON, default=dict)
 
     current_module = Column(String, nullable=True)
     urls_discovered = Column(Integer, default=0)
