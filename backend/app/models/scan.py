@@ -31,6 +31,7 @@ class Scan(Base):
     enable_browser_discovery = Column(Boolean, default=True)
     route_summary = Column(JSON, default=dict)
     coverage_summary = Column(JSON, default=dict)
+    auth_config = Column(JSON, nullable=True)
 
     current_module = Column(String, nullable=True)
     urls_discovered = Column(Integer, default=0)

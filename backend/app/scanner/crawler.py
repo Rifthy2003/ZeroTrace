@@ -62,15 +62,20 @@ class Crawler:
         allow_external: bool = False,
         enable_browser_discovery: bool = True,
         transport: Any = None,
+        auth_config: Optional[Dict[str, Any]] = None,
     ):
         self.start_url = normalize_url(start_url)
         self.max_depth = max_depth
         self.max_urls = max_urls
         self.allow_external = allow_external
         self.enable_browser_discovery = enable_browser_discovery
+        self.auth_config = auth_config or {}
+
+        client_headers = self.auth_config.get("headers") if isinstance(self.auth_config, dict) else None
+        client_cookies = self.auth_config.get("cookies") if isinstance(self.auth_config, dict) else None
 
         self.rate_limiter = AsyncRateLimiter(request_delay)
-        self.client = SafeHTTPClient(request_delay, transport=transport)
+        self.client = SafeHTTPClient(request_delay, transport=transport, headers=client_headers, cookies=client_cookies)
 
         self.visited: Set[str] = set()
         self.http_visited: Set[str] = set()
@@ -95,6 +100,7 @@ class Crawler:
                     base_url=self.start_url,
                     max_urls=self.max_urls,
                     request_delay=self.rate_limiter.delay_seconds,
+                    auth_config=self.auth_config,
                 )
                 spa_endpoints, metrics = await browser_crawler.crawl()
                 self.route_metrics.update(metrics)

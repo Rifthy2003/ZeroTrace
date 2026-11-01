@@ -122,6 +122,7 @@ async def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db)):
         request_delay=req.request_delay,
         modules=req.modules,
         enable_browser_discovery=req.enable_browser_discovery,
+        auth_config=req.auth_config,
     )
     db.add(scan)
     db.commit()

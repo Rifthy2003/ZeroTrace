@@ -57,6 +57,11 @@ def init_db():
                 conn.execute(text("ALTER TABLE scans ADD COLUMN coverage_summary JSON"))
             except Exception:
                 pass
+        if "auth_config" not in scan_cols:
+            try:
+                conn.execute(text("ALTER TABLE scans ADD COLUMN auth_config JSON"))
+            except Exception:
+                pass
 
         # targets table
         target_cols = get_existing_cols("targets")

@@ -34,6 +34,7 @@ class ScanCreateRequest(BaseModel):
     modules: List[str] = AVAILABLE_MODULES
     authorization_confirmed: bool = False
     enable_browser_discovery: bool = True
+    auth_config: Optional[dict] = None
 
     @field_validator("authorization_confirmed")
     @classmethod

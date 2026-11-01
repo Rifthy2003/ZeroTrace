@@ -192,12 +192,14 @@ async def run_scan(scan_id: str) -> None:
             logger.info("Endpoint discovered url=%s method=%s params=%d", ep.url, ep.method, len(ep.parameters))
             db.commit()
 
+        auth_cfg = getattr(scan, "auth_config", None) or {}
         crawler = Crawler(
             scan.target.base_url,
             depth,
             max_urls,
             delay,
             enable_browser_discovery=getattr(scan, "enable_browser_discovery", True),
+            auth_config=auth_cfg,
         )
         endpoints = await crawler.crawl(on_endpoint_discovered=on_endpoint)
         scan.route_summary = crawler.route_metrics
@@ -221,7 +223,9 @@ async def run_scan(scan_id: str) -> None:
         module_parameters_tested: Dict[str, int] = {m: 0 for m in ALL_KNOWN_MODULES}
         tested_param_keys: Set[str] = set()
 
-        client = SafeHTTPClient(delay)
+        client_headers = auth_cfg.get("headers") if isinstance(auth_cfg, dict) else None
+        client_cookies = auth_cfg.get("cookies") if isinstance(auth_cfg, dict) else None
+        client = SafeHTTPClient(delay, headers=client_headers, cookies=client_cookies)
         all_findings = []
 
         per_endpoint_modules = [

@@ -8,14 +8,18 @@ from app.core.config import settings
 
 
 class SafeHTTPClient:
-    def __init__(self, request_delay: float = 0.25, transport=None):
+    def __init__(self, request_delay: float = 0.25, transport=None, headers=None, cookies=None):
+        client_headers = {
+            "User-Agent": "ZeroTrace-Scanner/1.0 (+https://zerotrace.local; automated-web-vulnerability-scanner)"
+        }
+        if headers:
+            client_headers.update(headers)
         self._client = httpx.AsyncClient(
             transport=transport,
             timeout=settings.REQUEST_TIMEOUT_SECONDS,
             follow_redirects=False,  # scanners inspect redirects explicitly
-            headers={
-                "User-Agent": "ZeroTrace-Scanner/1.0 (+https://zerotrace.local; automated-web-vulnerability-scanner)"
-            },
+            headers=client_headers,
+            cookies=cookies,
         )
 
     async def request(self, method: str, url: str, **kwargs) -> httpx.Response | None:
