@@ -600,10 +600,10 @@ def report(scan_id: str, type: str = "summary", db: Session = Depends(get_db)):
     safe_host = "".join(c if c.isalnum() else "-" for c in (urlparse(target_base).hostname or "site")).strip("-")
     report_type = (type or "summary").lower().strip()
 
-    if report_type in ("bug-bounty", "bounty"):
+    if report_type in ("short", "short-report", "bug-bounty", "bounty"):
         pdf = build_complete_website_bug_bounty_pdf(scan, scan.findings, scan.summary)
-        filename = f"bug-bounty-{safe_host}-{scan_id[:8]}.pdf"
-        desc = f"Complete website bug bounty report downloaded for {target_base}."
+        filename = f"short-report-{safe_host}-{scan_id[:8]}.pdf" if report_type in ("short", "short-report") else f"bug-bounty-{safe_host}-{scan_id[:8]}.pdf"
+        desc = f"Short security assessment report downloaded for {target_base}." if report_type in ("short", "short-report") else f"Complete website bug bounty report downloaded for {target_base}."
     elif report_type == "full":
         pdf = build_report(scan, scan.findings, scan.summary)
         filename = f"scan-{scan_id[:8]}-full.pdf"
@@ -629,6 +629,11 @@ def report(scan_id: str, type: str = "summary", db: Session = Depends(get_db)):
         media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
+
+
+@router.get("/{scan_id}/report/short")
+def report_short(scan_id: str, db: Session = Depends(get_db)):
+    return report(scan_id, type="short", db=db)
 
 
 @router.get("/{scan_id}/report/bug-bounty")

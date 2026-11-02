@@ -1626,7 +1626,7 @@ def build_complete_website_bug_bounty_pdf(scan, findings, summary=None) -> bytes
         rightMargin=16 * mm,
         topMargin=16 * mm,
         bottomMargin=16 * mm,
-        title="ZeroTrace — Complete Website Bug Bounty Assessment Report",
+        title="ZeroTrace — Security Assessment Short Report",
         author="ZeroTrace Vulnerability Assessment Platform",
     )
 
@@ -1669,7 +1669,7 @@ def build_complete_website_bug_bounty_pdf(scan, findings, summary=None) -> bytes
     header_tbl = Table(
         [
             [
-                Paragraph("<b>ZeroTrace</b> — Complete Website Bug Bounty Assessment Report", ParagraphStyle("hdr_title", parent=body, fontSize=11, fontName="Helvetica-Bold", textColor=colors.HexColor("#0f172a"))),
+                Paragraph("<b>ZeroTrace</b> — Security Assessment Short Report", ParagraphStyle("hdr_title", parent=body, fontSize=11, fontName="Helvetica-Bold", textColor=colors.HexColor("#0f172a"))),
                 Paragraph("CONSOLIDATED AUDIT // CONFIDENTIAL", ParagraphStyle("hdr_sub", parent=body, fontSize=8, fontName="Helvetica-Bold", textColor=colors.HexColor("#0284c7"), alignment=2)),
             ]
         ],

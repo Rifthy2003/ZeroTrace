@@ -35,6 +35,7 @@ export const reportUrl = (id, type = "summary") => `${api.defaults.baseURL}/api/
 export const summaryReportUrl = (id) => `${api.defaults.baseURL}/api/scans/${id}/report?type=summary`;
 export const fullReportUrl = (id) => `${api.defaults.baseURL}/api/scans/${id}/report?type=full`;
 export const completeBountyReportUrl = (id) => `${api.defaults.baseURL}/api/scans/${id}/report/bug-bounty`;
+export const shortReportUrl = (id) => `${api.defaults.baseURL}/api/scans/${id}/report/short`;
 export const bountyReportUrl = (fid) => `${api.defaults.baseURL}/api/findings/${fid}/report`;
 export const bountyMarkdownUrl = (fid) => `${api.defaults.baseURL}/api/findings/${fid}/markdown`;
 export const getBountyMarkdown = (fid) => api.get(`/api/findings/${fid}/markdown`, { responseType: "text" }).then((r) => r.data);
