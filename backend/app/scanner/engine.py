@@ -501,6 +501,7 @@ async def run_scan(scan_id: str) -> None:
                 url=f.url,
                 parameter=f.parameter,
                 method=f.method,
+                evidence=f.evidence,
             )
             db.add(Finding(
                 scan_id=scan_id,

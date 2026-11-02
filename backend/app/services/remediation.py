@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.models.activity import Activity
 from app.models.finding import Finding
 from app.models.scan import Scan, ScanStatus
+from app.scanner.severity import extract_header_name
 
 logger = logging.getLogger("remediation")
 
@@ -29,10 +30,15 @@ def generate_finding_fingerprint(
     url: str,
     parameter: Optional[str] = None,
     method: Optional[str] = "GET",
+    evidence: Optional[str] = None,
 ) -> str:
     """
-    Generate a stable, deterministic fingerprint for a finding.
-    Based on target hostname/port, finding type, affected route path, and parameter.
+    Generate a stable, deterministic, vulnerability-specific fingerprint for a finding.
+    - Missing Security Headers: Scoped to target origin + normalized header name (host-wide).
+    - Insecure Cookies: Scoped to target origin + cookie name + issue.
+    - Technology Detection: Scoped to target origin + detected component.
+    - Sensitive Files / Directory Listing: Scoped to target origin + specific file/dir path.
+    - Endpoint vulnerabilities (SQLi, XSS, CSRF, etc.): Scoped to target origin + path + parameter + method.
     """
     parsed_target = urlparse(target_url or "")
     parsed_url = urlparse(url or "")
@@ -46,6 +52,28 @@ def generate_finding_fingerprint(
     param_str = (parameter or "").strip().lower()
     method_str = (method or "GET").strip().upper()
 
+    # 1. Missing Security Headers: origin-level scope
+    if "header" in type_str:
+        header_name = extract_header_name(param_str, evidence) or param_str or "generic"
+        seed = f"{target_host}|missing_header|{header_name.lower()}"
+        return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:20]
+
+    # 2. Insecure Cookies: origin-level scope + cookie name
+    if "cookie" in type_str:
+        seed = f"{target_host}|cookie|{type_str}|{param_str}"
+        return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:20]
+
+    # 3. Technology Detection: origin-level scope
+    if "technology" in type_str:
+        seed = f"{target_host}|tech|{param_str or (evidence or '')[:40].lower()}"
+        return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:20]
+
+    # 4. Sensitive Files / Directory Listing: file path scope
+    if any(k in type_str for k in ("sensitive file", "directory listing")):
+        seed = f"{target_host}|file|{type_str}|{path}"
+        return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:20]
+
+    # 5. Endpoint/Input-dependent vulnerabilities (SQLi, XSS, Command Injection, etc.)
     seed = f"{target_host}|{path}|{type_str}|{param_str}|{method_str}"
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:20]
 

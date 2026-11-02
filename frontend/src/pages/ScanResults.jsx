@@ -8,7 +8,16 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { getFindings, getScan, getSecurityPosture, reportUrl } from "../services/api";
+import {
+  getFindings,
+  getScan,
+  getSecurityPosture,
+  reportUrl,
+  summaryReportUrl,
+  fullReportUrl,
+  completeBountyReportUrl,
+  bountyReportUrl,
+} from "../services/api";
 import { Card, SeverityBadge, LifecycleBadge, Spinner, Pagination } from "../components/ui";
 import { SEVERITIES, SEVERITY_COLORS, fmtDate } from "../utils/format";
 
@@ -235,18 +244,48 @@ export default function ScanResults() {
             Target: <span className="font-mono text-emerald-400">{scan.target_url || scan.target?.base_url || "Target"}</span>
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={handleExportCSV}
-            className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded text-xs border border-slate-700 transition-colors inline-flex items-center gap-1.5"
+            className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded text-xs border border-slate-700 transition-colors inline-flex items-center gap-1.5"
           >
             <span>📥</span> Export CSV
           </button>
           <a
-            href={reportUrl(id)}
-            className="inline-flex items-center justify-center bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-4 py-2 rounded text-sm transition-colors"
+            href={completeBountyReportUrl(id)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center justify-center bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-3.5 py-2 rounded text-xs transition-colors gap-1.5 shadow-sm"
+            title="Download Complete Website Bug Bounty Report (4–6 Page PDF)"
           >
-            Download PDF report
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            Download Complete Bug Bounty Report (PDF)
+          </a>
+          <a
+            href={summaryReportUrl(id)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center justify-center bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-3.5 py-2 rounded text-xs transition-colors gap-1.5 shadow-sm"
+            title="Concise 5-15 page Security Assessment Summary"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            Security Summary (PDF)
+          </a>
+          <a
+            href={fullReportUrl(id)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium px-3.5 py-2 rounded text-xs border border-slate-700 transition-colors gap-1.5"
+            title="Full Comprehensive Technical PDF with payloads and full logs"
+          >
+            <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            Full Technical (PDF)
           </a>
         </div>
       </div>
@@ -773,8 +812,8 @@ export default function ScanResults() {
                       <th className="py-2.5 px-3">Severity</th>
                       <th className="py-2.5 px-3">Detection Status</th>
                       <th className="py-2.5 px-3">Confidence</th>
-                      <th className="py-2.5 px-3">Affected URL</th>
-                      <th className="py-2.5 px-3">Param</th>
+                      <th className="py-2.5 px-3">Affected Endpoint(s)</th>
+                      <th className="py-2.5 px-3">Param / Header</th>
                       <th className="py-2.5 px-3 text-center">Instances</th>
                       <th className="py-2.5 px-3 text-right">Details</th>
                     </tr>
@@ -783,15 +822,24 @@ export default function ScanResults() {
                     {paginatedFindings.map((f) => {
                       const isExpanded = expandedFindingId === f.id;
                       const occurrences = f.evidence_details?.occurrences || [];
+                      const affectedUrls = f.evidence_details?.affected_urls || (f.url ? [f.url] : []);
+                      const affectedCount = f.evidence_details?.total_affected_endpoints || affectedUrls.length || 1;
                       const rawCount = f.raw_instances || occurrences.length || 1;
 
                       return (
                         <React.Fragment key={f.id}>
                           <tr className={`hover:bg-slate-800/40 transition-colors ${isExpanded ? "bg-slate-800/20" : ""}`}>
                             <td className="py-2.5 px-3">
-                              <div className="flex flex-col">
-                                <span className="font-semibold text-slate-200">{f.type}</span>
-                                <div className="flex items-center gap-1.5 mt-0.5">
+                              <div className="flex flex-col gap-1">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-semibold text-slate-200">{f.type}</span>
+                                  {f.type === "Missing Security Header" && f.parameter && (
+                                    <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-amber-950/40 text-amber-300 border border-amber-800/60 font-semibold">
+                                      {f.parameter}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                                   {f.cwe_id && (
                                     <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-indigo-950/60 text-indigo-300 border border-indigo-800/60">
                                       {f.cwe_id}
@@ -800,6 +848,11 @@ export default function ScanResults() {
                                   {f.mitre_attack && (
                                     <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-rose-950/60 text-rose-300 border border-rose-800/60">
                                       {f.mitre_attack}
+                                    </span>
+                                  )}
+                                  {affectedCount > 1 && (
+                                    <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-cyan-950/60 text-cyan-300 border border-cyan-800/60">
+                                      Across {affectedCount} endpoints
                                     </span>
                                   )}
                                 </div>
@@ -822,33 +875,46 @@ export default function ScanResults() {
                               </span>
                             </td>
                             <td className="py-2.5 px-3 text-xs text-slate-300">{f.confidence}</td>
-                            <td className="py-2.5 px-3 font-mono text-xs text-slate-300 truncate max-w-xs" title={f.url}>
-                              {f.url}
+                            <td className="py-2.5 px-3 font-mono text-xs text-slate-300 max-w-xs" title={f.url}>
+                              <div className="truncate">{f.url}</div>
+                              {affectedCount > 1 && (
+                                <div className="text-[10px] text-cyan-400 font-sans mt-0.5">
+                                  + {affectedCount - 1} more endpoint{affectedCount - 1 > 1 ? "s" : ""}
+                                </div>
+                              )}
                             </td>
                             <td className="py-2.5 px-3 font-mono text-xs text-slate-400">
-                              {f.parameter || "—"}
+                              {f.parameter ? (
+                                <span className="px-1.5 py-0.5 rounded bg-slate-800 text-amber-300/90 border border-slate-700/60 font-semibold">
+                                  {f.parameter}
+                                </span>
+                              ) : (
+                                "—"
+                              )}
                             </td>
                             <td className="py-2.5 px-3 text-center">
                               <span
-                                className={`text-xs px-2 py-0.5 rounded font-mono ${
+                                className={`text-xs px-2.5 py-0.5 rounded font-mono ${
                                   rawCount > 1
-                                    ? "bg-amber-950/40 text-amber-300 border border-amber-800/60 font-bold"
+                                    ? "bg-amber-950/50 text-amber-300 border border-amber-800/80 font-bold"
                                     : "bg-slate-800 text-slate-400"
                                 }`}
-                                title={`${rawCount} total occurrence(s) across pages`}
+                                title={`${rawCount} total occurrence(s) across ${affectedCount} endpoint(s)`}
                               >
                                 {rawCount}
                               </span>
                             </td>
                             <td className="py-2.5 px-3 text-right">
-                              <button
-                                type="button"
-                                onClick={() => setExpandedFindingId(isExpanded ? null : f.id)}
-                                className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition-colors inline-flex items-center gap-1"
-                              >
-                                <span>{isExpanded ? "Hide" : "Details"}</span>
-                                <span>{isExpanded ? "▲" : "▼"}</span>
-                              </button>
+                              <div className="inline-flex items-center gap-1.5 justify-end">
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedFindingId(isExpanded ? null : f.id)}
+                                  className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition-colors inline-flex items-center gap-1"
+                                >
+                                  <span>{isExpanded ? "Hide" : "Details"}</span>
+                                  <span>{isExpanded ? "▲" : "▼"}</span>
+                                </button>
+                              </div>
                             </td>
                           </tr>
 
@@ -858,21 +924,43 @@ export default function ScanResults() {
                               <td colSpan={8} className="p-4 bg-slate-950/80 border-b border-slate-800">
                                 <div className="space-y-3 max-w-5xl mx-auto text-xs">
                                   <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-2 flex-wrap">
                                       <span className="font-bold text-slate-200 text-sm">{f.type}</span>
+                                      {f.parameter && (
+                                        <span className="font-mono text-amber-300 bg-amber-950/40 px-2 py-0.5 rounded border border-amber-800/60 text-xs font-bold">
+                                          {f.parameter}
+                                        </span>
+                                      )}
                                       <LifecycleBadge status={f.status} />
+                                      {affectedCount > 1 && (
+                                        <span className="font-mono text-cyan-300 bg-cyan-950/60 px-2 py-0.5 rounded border border-cyan-800/80 text-[11px] font-semibold">
+                                          1 unique finding across {affectedCount} endpoints ({rawCount} raw occurrences)
+                                        </span>
+                                      )}
                                       {f.fingerprint && (
                                         <span className="font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 text-[11px]">
                                           Fingerprint: {f.fingerprint}
                                         </span>
                                       )}
                                     </div>
-                                    <Link
-                                      to={`/scan/${id}/finding/${f.id}`}
-                                      className="text-emerald-400 hover:text-emerald-300 font-semibold inline-flex items-center gap-1"
-                                    >
-                                      Manage Lifecycle Status &rarr;
-                                    </Link>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <a
+                                        href={bountyReportUrl(f.id)}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="px-2.5 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs font-semibold border border-amber-500/40 inline-flex items-center gap-1.5 transition-colors"
+                                        title="Download 4-6 Page Bug Bounty PDF for this vulnerability"
+                                      >
+                                        <span>📄</span>
+                                        <span>Download Bug Bounty Report (PDF)</span>
+                                      </a>
+                                      <Link
+                                        to={`/scan/${id}/finding/${f.id}`}
+                                        className="text-emerald-400 hover:text-emerald-300 font-semibold inline-flex items-center gap-1 ml-1"
+                                      >
+                                        Manage Lifecycle &rarr;
+                                      </Link>
+                                    </div>
                                   </div>
 
                                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -906,27 +994,57 @@ export default function ScanResults() {
                                     </div>
                                   </div>
 
+                                  {/* List of Affected URLs */}
+                                  {affectedUrls.length > 1 && (
+                                    <div className="p-2.5 rounded bg-slate-900 border border-slate-800">
+                                      <span className="font-semibold text-slate-300 text-xs block mb-1.5">
+                                        Affected Endpoints ({affectedUrls.length}):
+                                      </span>
+                                      <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+                                        {affectedUrls.map((u, uIdx) => (
+                                          <span
+                                            key={uIdx}
+                                            className="font-mono text-[11px] px-2 py-0.5 rounded bg-slate-800/80 text-cyan-300 border border-slate-700 truncate max-w-sm"
+                                            title={u}
+                                          >
+                                            {u}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+
                                   {/* Raw Occurrences Sub-table */}
-                                  {occurrences.length > 1 && (
+                                  {occurrences.length > 0 && (
                                     <div className="pt-2 border-t border-slate-800/80">
                                       <span className="font-semibold text-slate-300 text-xs block mb-1.5">
-                                        Raw Instances Grouped Under This Vulnerability ({occurrences.length}):
+                                        Occurrence Breakdown Across Endpoints ({occurrences.length}):
                                       </span>
-                                      <div className="max-h-36 overflow-y-auto border border-slate-800 rounded bg-slate-900/60">
+                                      <div className="max-h-48 overflow-y-auto border border-slate-800 rounded bg-slate-900/60">
                                         <table className="w-full text-[11px] font-mono">
                                           <thead className="bg-slate-950 text-slate-400 text-left border-b border-slate-800">
                                             <tr>
-                                              <th className="py-1 px-2">URL</th>
+                                              <th className="py-1 px-2">Endpoint URL</th>
                                               <th className="py-1 px-2">Method</th>
-                                              <th className="py-1 px-2">Param</th>
+                                              <th className="py-1 px-2">Param / Header</th>
+                                              <th className="py-1 px-2">Evidence Excerpt</th>
+                                              <th className="py-1 px-2">Severity</th>
                                             </tr>
                                           </thead>
                                           <tbody className="divide-y divide-slate-800">
                                             {occurrences.map((occ, oIdx) => (
                                               <tr key={oIdx} className="hover:bg-slate-800/40">
-                                                <td className="py-1 px-2 truncate max-w-md text-slate-300">{occ.url}</td>
+                                                <td className="py-1 px-2 truncate max-w-xs text-slate-300" title={occ.url}>
+                                                  {occ.url}
+                                                </td>
                                                 <td className="py-1 px-2 text-slate-400">{occ.method || "GET"}</td>
-                                                <td className="py-1 px-2 text-slate-400">{occ.parameter || "—"}</td>
+                                                <td className="py-1 px-2 text-amber-300/90">{occ.parameter || f.parameter || "—"}</td>
+                                                <td className="py-1 px-2 text-slate-400 truncate max-w-xs" title={occ.evidence}>
+                                                  {occ.evidence || f.evidence || "—"}
+                                                </td>
+                                                <td className="py-1 px-2">
+                                                  <SeverityBadge severity={occ.severity || f.severity} />
+                                                </td>
                                               </tr>
                                             ))}
                                           </tbody>

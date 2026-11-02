@@ -55,14 +55,25 @@ class ScanCreateRequest(BaseModel):
         return v
 
 
+class ScanRenameRequest(BaseModel):
+    name: str
+
+
+class ScanBulkActionRequest(BaseModel):
+    scan_ids: List[str]
+
+
 class ScanResponse(BaseModel):
     id: str
     target_id: str
+    name: Optional[str] = None
     application_id: Optional[str] = None
     application_name: Optional[str] = None
     target_url: Optional[str] = None
     hostname: Optional[str] = None
     status: str
+    is_deleted: Optional[bool] = False
+    deleted_at: Optional[datetime] = None
     max_depth: int
     max_urls: int
     request_delay: float
@@ -75,6 +86,10 @@ class ScanResponse(BaseModel):
     urls_scanned: int
     parameters_found: int
     findings_count: int
+    unique_findings_count: Optional[int] = 0
+    raw_occurrences_count: Optional[int] = 0
+    security_rating: Optional[str] = None
+    security_score: Optional[float] = None
     progress_percent: float
     error_message: Optional[str] = None
     created_at: datetime

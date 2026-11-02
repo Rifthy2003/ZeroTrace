@@ -5,13 +5,14 @@ import logging
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from app.database.session import get_db
 from app.models.activity import Activity
 from app.models.finding import Finding, Severity
 from app.models.scan import Scan
+from app.reports.bug_bounty_report import build_bug_bounty_markdown, build_bug_bounty_pdf
 from app.schemas.scan import (
     ActivityResponse,
     FindingResponse,
@@ -143,4 +144,73 @@ def list_remediation_findings(
         item["application_name"] = f.scan.application.name if f.scan and f.scan.application else None
         results.append(item)
     return results
+
+
+@router.get("/api/findings/{finding_id}", response_model=FindingResponse)
+def get_finding(finding_id: str, db: Session = Depends(get_db)):
+    finding = db.get(Finding, finding_id)
+    if not finding:
+        raise HTTPException(404, "Finding not found")
+    r = FindingResponse.model_validate(finding)
+    r.severity = finding.severity.value if hasattr(finding.severity, "value") else str(finding.severity)
+    r.confidence = finding.confidence.value if hasattr(finding.confidence, "value") else str(finding.confidence)
+    r.status = finding.status or "open"
+    if finding.type == "Missing Security Header":
+        from app.scanner.severity import extract_header_name, SECURITY_HEADER_RULES
+        hname = extract_header_name(finding.parameter, finding.evidence)
+        if hname:
+            r.parameter = hname
+            if hname in SECURITY_HEADER_RULES:
+                r.severity = SECURITY_HEADER_RULES[hname]["severity"].value
+    if not r.raw_instances:
+        r.raw_instances = 1
+    return r
+
+
+@router.get("/api/findings/{finding_id}/report")
+def get_finding_bug_bounty_report(finding_id: str, db: Session = Depends(get_db)):
+    finding = db.get(Finding, finding_id)
+    if not finding:
+        raise HTTPException(404, "Finding not found")
+
+    pdf = build_bug_bounty_pdf(finding, finding.scan)
+    safe_title = "".join(c if c.isalnum() else "-" for c in (finding.type or "finding").lower()).strip("-")
+    filename = f"bounty-report-{safe_title[:24]}-{finding_id[:8]}.pdf"
+
+    scan = finding.scan
+    app_id = scan.application_id if scan else None
+    record_activity(
+        db,
+        event_type="bounty_report_generated",
+        title="Bug Bounty Report Generated",
+        description=f"Exported responsible disclosure report for '{finding.type}' on {finding.url}.",
+        scan_id=scan.id if scan else None,
+        application_id=app_id,
+        severity="info",
+        metadata={"finding_id": finding.id, "type": finding.type, "url": finding.url},
+    )
+
+    return Response(
+        pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.get("/api/findings/{finding_id}/markdown")
+def get_finding_bug_bounty_markdown(finding_id: str, db: Session = Depends(get_db)):
+    finding = db.get(Finding, finding_id)
+    if not finding:
+        raise HTTPException(404, "Finding not found")
+
+    md_content = build_bug_bounty_markdown(finding, finding.scan)
+    safe_title = "".join(c if c.isalnum() else "-" for c in (finding.type or "finding").lower()).strip("-")
+    filename = f"hackerone-{safe_title[:24]}-{finding_id[:8]}.md"
+
+    return Response(
+        md_content,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
 

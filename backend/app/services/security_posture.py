@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 
 from app.models.finding import Confidence, Finding, Severity
 from app.models.scan import Scan, ScanStatus
+from app.scanner.severity import extract_header_name, SECURITY_HEADER_RULES
 
 
 # Configurable base penalty weights per severity
@@ -121,8 +122,8 @@ def _canonical_dedup_key(f: Any) -> str:
 
     if ftype == "Missing Security Header":
         # Keep genuinely different headers as separate findings, deduplicating across URLs
-        header_name = fparam if fparam else fevidence.split(":")[0].strip()
-        return f"header::{header_name.lower()}"
+        header_name = extract_header_name(fparam, fevidence)
+        return f"header::{header_name}"
 
     if "Cookie" in ftype:
         return f"cookie::{ftype.lower()}::{fparam}"
@@ -196,6 +197,14 @@ def deduplicate_findings(findings: List[Any]) -> List[UniqueFinding]:
 
     unique_list: List[UniqueFinding] = []
     for g in groups.values():
+        if g["type"] == "Missing Security Header":
+            hname = extract_header_name(g.get("parameter"), g.get("description") or "")
+            if hname:
+                g["parameter"] = hname
+                if hname in SECURITY_HEADER_RULES:
+                    hrule_sev = SECURITY_HEADER_RULES[hname]["severity"]
+                    g["severity"] = hrule_sev.value if hasattr(hrule_sev, "value") else str(hrule_sev)
+
         is_conf = g["confidence"] == Confidence.CONFIRMED.value
         needs_verif = g["confidence"] in (
             Confidence.HIGH.value,

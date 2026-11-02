@@ -1,3 +1,168 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ZeroTrace Cybersecurity Radar & Progress Animations */
+@keyframes radarSweep {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes radarPulse {
+  0% {
+    transform: scale(0.75);
+    opacity: 0.9;
+  }
+  50% {
+    opacity: 0.35;
+  }
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+
+@keyframes scanLaser {
+  0% {
+    top: 10%;
+    opacity: 0.2;
+  }
+  50% {
+    top: 85%;
+    opacity: 0.95;
+  }
+  100% {
+    top: 10%;
+    opacity: 0.2;
+  }
+}
+
+@keyframes progressShimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.25), inset 0 0 12px rgba(16, 185, 129, 0.15);
+  }
+  50% {
+    box-shadow: 0 0 28px rgba(16, 185, 129, 0.6), inset 0 0 20px rgba(16, 185, 129, 0.35);
+  }
+}
+
+@keyframes ringRotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes ringRotateReverse {
+  from {
+    transform: rotate(360deg);
+  }
+  to {
+    transform: rotate(0deg);
+  }
+}
+
+.animate-radar-sweep {
+  animation: radarSweep 3.2s linear infinite;
+}
+
+.animate-radar-pulse {
+  animation: radarPulse 2.6s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+.animate-radar-pulse-delayed {
+  animation: radarPulse 2.6s cubic-bezier(0.16, 1, 0.3, 1) infinite 1.3s;
+}
+
+.animate-scan-laser {
+  animation: scanLaser 2.2s ease-in-out infinite;
+}
+
+.animate-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(16, 185, 129, 0.9) 0%,
+    rgba(52, 211, 153, 1) 30%,
+    rgba(255, 255, 255, 0.8) 50%,
+    rgba(52, 211, 153, 1) 70%,
+    rgba(16, 185, 129, 0.9) 100%
+  );
+  background-size: 200% 100%;
+  animation: progressShimmer 2s linear infinite;
+}
+
+.animate-pulse-glow {
+  animation: pulseGlow 2.2s ease-in-out infinite;
+}
+
+.animate-ring-rotate {
+  animation: ringRotate 14s linear infinite;
+}
+
+.animate-ring-reverse {
+  animation: ringRotateReverse 18s linear infinite;
+}
+
+@keyframes trackPulse {
+  0% {
+    left: -20%;
+    opacity: 0;
+  }
+  20% {
+    opacity: 0.9;
+  }
+  80% {
+    opacity: 0.9;
+  }
+  100% {
+    left: 100%;
+    opacity: 0;
+  }
+}
+
+.animate-track-pulse {
+  animation: trackPulse 2.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.progress-shimmer-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.28) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: progressShimmer 2s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-radar-sweep,
+  .animate-radar-pulse,
+  .animate-radar-pulse-delayed,
+  .animate-scan-laser,
+  .animate-shimmer,
+  .animate-pulse-glow,
+  .animate-ring-rotate,
+  .animate-ring-reverse,
+  .animate-track-pulse,
+  .progress-shimmer-overlay {
+    animation: none !important;
+  }
+}

@@ -62,6 +62,22 @@ def init_db():
                 conn.execute(text("ALTER TABLE scans ADD COLUMN auth_config JSON"))
             except Exception:
                 pass
+        if "name" not in scan_cols:
+            try:
+                conn.execute(text("ALTER TABLE scans ADD COLUMN name VARCHAR"))
+            except Exception:
+                pass
+        bool_false = "FALSE" if is_pg else "0"
+        if "is_deleted" not in scan_cols:
+            try:
+                conn.execute(text(f"ALTER TABLE scans ADD COLUMN is_deleted BOOLEAN DEFAULT {bool_false}"))
+            except Exception:
+                pass
+        if "deleted_at" not in scan_cols:
+            try:
+                conn.execute(text(f"ALTER TABLE scans ADD COLUMN deleted_at {timestamp_type}"))
+            except Exception:
+                pass
 
         # targets table
         target_cols = get_existing_cols("targets")
@@ -121,6 +137,31 @@ def init_db():
         if "evidence_details" not in finding_cols:
             try:
                 conn.execute(text("ALTER TABLE findings ADD COLUMN evidence_details JSON"))
+            except Exception:
+                pass
+
+        # Data backfill for historical Missing Security Header findings
+        header_backfill = [
+            ("content-security-policy", "Medium"),
+            ("x-frame-options", "Medium"),
+            ("strict-transport-security", "Low"),
+            ("x-content-type-options", "Low"),
+            ("referrer-policy", "Low"),
+            ("permissions-policy", "Informational"),
+        ]
+        for h_name, h_sev in header_backfill:
+            try:
+                # Populate parameter from evidence if missing
+                conn.execute(text(
+                    f"UPDATE findings SET parameter = '{h_name}', severity = '{h_sev}' "
+                    f"WHERE type = 'Missing Security Header' AND (parameter IS NULL OR parameter = '') "
+                    f"AND LOWER(evidence) LIKE '%{h_name}%'"
+                ))
+                # Standardize severity for existing records
+                conn.execute(text(
+                    f"UPDATE findings SET severity = '{h_sev}' "
+                    f"WHERE type = 'Missing Security Header' AND LOWER(parameter) = '{h_name}'"
+                ))
             except Exception:
                 pass
 

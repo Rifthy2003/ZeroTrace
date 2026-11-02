@@ -22,7 +22,10 @@ class Scan(Base):
     target_id = Column(String, ForeignKey("targets.id"), nullable=False)
     application_id = Column(String, ForeignKey("applications.id"), nullable=True)
 
+    name = Column(String, nullable=True)
     status = Column(Enum(ScanStatus), default=ScanStatus.PENDING, nullable=False)
+    is_deleted = Column(Boolean, default=False, nullable=False)
+    deleted_at = Column(DateTime, nullable=True)
 
     max_depth = Column(Integer, default=2)
     max_urls = Column(Integer, default=50)

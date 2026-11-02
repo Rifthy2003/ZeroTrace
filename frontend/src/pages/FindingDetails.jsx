@@ -1,6 +1,10 @@
 import React, { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { getFindings, updateFindingStatus } from "../services/api";
+import {
+  getFindings,
+  updateFindingStatus,
+  bountyReportUrl,
+} from "../services/api";
 import { Card, SeverityBadge, LifecycleBadge, Spinner } from "../components/ui";
 import { fmtDate } from "../utils/format";
 
@@ -52,9 +56,25 @@ export default function FindingDetails() {
 
   return (
     <div className="max-w-4xl space-y-4">
-      <Link to={`/scan/${id}`} className="text-sm text-emerald-400 hover:text-emerald-300 inline-flex items-center gap-1">
-        &larr; Back to scan results
-      </Link>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <Link to={`/scan/${id}`} className="text-sm text-emerald-400 hover:text-emerald-300 inline-flex items-center gap-1">
+          &larr; Back to scan results
+        </Link>
+        <div className="flex items-center gap-2">
+          <a
+            href={bountyReportUrl(f.id)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors shadow-sm"
+            title="Download individual 4-6 page Bug Bounty PDF report"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            Download Bug Bounty Report (PDF)
+          </a>
+        </div>
+      </div>
       <div>
         <h1 className="text-2xl font-bold text-slate-100">{f.type}</h1>
         <div className="flex flex-wrap gap-2.5 items-center mt-2.5">
@@ -63,13 +83,12 @@ export default function FindingDetails() {
             Confidence: {f.confidence}
           </span>
           <span
-            className={`text-xs px-2.5 py-0.5 rounded font-semibold border ${
-              f.detection_status === "Confirmed"
+            className={`text-xs px-2.5 py-0.5 rounded font-semibold border ${f.detection_status === "Confirmed"
                 ? "bg-emerald-950/60 text-emerald-400 border-emerald-800/80"
                 : f.detection_status === "Requires Manual Verification"
-                ? "bg-amber-950/60 text-amber-400 border-amber-800/80"
-                : "bg-blue-950/60 text-blue-400 border-blue-800/80"
-            }`}
+                  ? "bg-amber-950/60 text-amber-400 border-amber-800/80"
+                  : "bg-blue-950/60 text-blue-400 border-blue-800/80"
+              }`}
           >
             {f.detection_status || "Confirmed"}
           </span>

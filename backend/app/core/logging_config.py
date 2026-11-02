@@ -10,17 +10,21 @@ import re
 import sys
 
 SECRET_PATTERNS = [
-    re.compile(r"(?i)(password|passwd|pwd)\s*[:=]\s*\S+"),
-    re.compile(r"(?i)(authorization|api[_-]?key|token|secret)\s*[:=]\s*\S+"),
-    re.compile(r"(?i)set-cookie:\s*\S+", re.MULTILINE),
-    re.compile(r"(?i)bearer\s+[a-z0-9\-_.]+"),
+    (re.compile(r"(?i)(authorization)\s*:\s*bearer\s+[a-z0-9\-_.]+"), r"\1: Bearer [REDACTED]"),
+    (re.compile(r"(?i)\bbearer\s+[a-z0-9\-_.]+"), r"Bearer [REDACTED]"),
+    (re.compile(r"(?i)(password|passwd|pwd)\s*[:=]\s*([^\s,;\"']+)"), r"\1=[REDACTED]"),
+    (re.compile(r"(?i)(authorization|api[_-]?key|token|secret)\s*[:=]\s*([^\r\n,;\"']+)"), r"\1=[REDACTED]"),
+    (re.compile(r"(?i)set-cookie:\s*([^\r\n]+)"), r"Set-Cookie: [REDACTED]"),
+    (re.compile(r"(?i)[\"']?(password|passwd|pwd|token|secret|access_token)[\"']?\s*:\s*[\"'][^\"']+[\"']"), r'"\1": "[REDACTED]"'),
 ]
 
 
 def redact(text: str) -> str:
-    redacted = text
-    for pattern in SECRET_PATTERNS:
-        redacted = pattern.sub(lambda m: m.group(0).split(":")[0].split("=")[0] + "=[REDACTED]", redacted)
+    if not text:
+        return ""
+    redacted = str(text)
+    for pattern, replacement in SECRET_PATTERNS:
+        redacted = pattern.sub(replacement, redacted)
     return redacted
 
 

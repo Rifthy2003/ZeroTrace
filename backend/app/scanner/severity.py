@@ -15,42 +15,122 @@ Rules (documented for auditability):
  - Pure technology fingerprinting: Informational.
  - Heuristic or authorization checks (IDOR) require manual verification.
 """
-from typing import List, Dict, Any, Tuple
+import re
+from typing import List, Dict, Any, Tuple, Optional
 from urllib.parse import urlparse
 from app.scanner.models import ScanFinding
 
 SEVERITY_ORDER = ["Informational", "Low", "Medium", "High", "Critical"]
 
+SECURITY_HEADER_RULES: Dict[str, Dict[str, str]] = {
+    "content-security-policy": {
+        "title": "Missing Content-Security-Policy Header",
+        "severity": "Medium",
+        "cwe_id": "CWE-693",
+        "mitre_attack": "T1562",
+        "description": "Content-Security-Policy is missing across application responses, allowing injection attacks (e.g. Cross-Site Scripting, frame injection) to execute without defense-in-depth restrictions.",
+        "impact": "Increases susceptibility to Cross-Site Scripting (XSS), clickjacking, and unauthorized resource injection.",
+        "remediation": "Deploy a strict Content-Security-Policy (e.g., default-src 'self'; script-src 'self'; object-src 'none') to restrict untrusted sources.",
+    },
+    "x-frame-options": {
+        "title": "Missing X-Frame-Options Header",
+        "severity": "Medium",
+        "cwe_id": "CWE-1021",
+        "mitre_attack": "T1562",
+        "description": "X-Frame-Options is missing, permitting web pages to be framed by external origins and exposing users to clickjacking UI redress attacks.",
+        "impact": "Attackers can embed target interfaces in deceptive iframes to hijack user clicks and actions.",
+        "remediation": "Send 'X-Frame-Options: DENY' or 'X-Frame-Options: SAMEORIGIN', or use CSP 'frame-ancestors 'self''.",
+    },
+    "strict-transport-security": {
+        "title": "Missing Strict-Transport-Security Header",
+        "severity": "Low",
+        "cwe_id": "CWE-319",
+        "mitre_attack": "T1562",
+        "description": "HTTP Strict Transport Security (HSTS) is missing, leaving communication vulnerable to SSL-stripping and downgrade attacks on initial visit.",
+        "impact": "Unencrypted HTTP connections can be intercepted or manipulated via man-in-the-middle attacks.",
+        "remediation": "Add 'Strict-Transport-Security: max-age=31536000; includeSubDomains; preload' to all HTTPS responses.",
+    },
+    "x-content-type-options": {
+        "title": "Missing X-Content-Type-Options Header",
+        "severity": "Low",
+        "cwe_id": "CWE-693",
+        "mitre_attack": "T1562",
+        "description": "X-Content-Type-Options is missing, allowing browsers to MIME-sniff response bodies and execute non-executable file types as scripts.",
+        "impact": "MIME-type confusion can lead to cross-site scripting when serving user-uploaded files.",
+        "remediation": "Add 'X-Content-Type-Options: nosniff' to all HTTP responses.",
+    },
+    "referrer-policy": {
+        "title": "Missing Referrer-Policy Header",
+        "severity": "Low",
+        "cwe_id": "CWE-200",
+        "mitre_attack": "T1592",
+        "description": "Referrer-Policy is missing, which may inadvertently transmit sensitive URL paths and query parameters to third-party domains.",
+        "impact": "Sensitive session IDs or token query strings may leak via HTTP Referer headers.",
+        "remediation": "Configure 'Referrer-Policy: strict-origin-when-cross-origin' or 'no-referrer'.",
+    },
+    "permissions-policy": {
+        "title": "Missing Permissions-Policy Header",
+        "severity": "Informational",
+        "cwe_id": "CWE-693",
+        "mitre_attack": "T1562",
+        "description": "Permissions-Policy is missing, allowing browser features (geolocation, camera, microphone) to run without explicit site restrictions.",
+        "impact": "Allows untrusted iframes or embedded third-party scripts to access browser device APIs if permission is granted.",
+        "remediation": "Define a Permissions-Policy header explicitly disallowing unused browser features.",
+    },
+}
+
 CWE_MITRE_MAP: Dict[str, Tuple[str, str]] = {
-    "SQL Injection": ("CWE-89", "T1190"),
-    "Reflected XSS": ("CWE-79", "T1059.007"),
-    "Stored XSS": ("CWE-79", "T1059.007"),
-    "DOM XSS": ("CWE-79", "T1059.007"),
-    "Input Reflection": ("CWE-79", "T1059.007"),
-    "Command Injection": ("CWE-78", "T1059"),
-    "Server-Side Template Injection": ("CWE-1336", "T1190"),
-    "Potential CSRF": ("CWE-352", "T1566"),
-    "CSRF": ("CWE-352", "T1566"),
-    "Open Redirect": ("CWE-601", "T1566.002"),
     "Missing Security Header": ("CWE-693", "T1562"),
-    "Insecure Cookie Configuration": ("CWE-614", "T1539"),
-    "Directory Listing": ("CWE-548", "T1083"),
-    "Exposed Sensitive File": ("CWE-552", "T1552"),
-    "Sensitive File Exposure": ("CWE-552", "T1552"),
-    "Potential Information Disclosure": ("CWE-200", "T1592"),
-    "Technology Detection": ("CWE-200", "T1592"),
-    "CORS Misconfiguration": ("CWE-942", "T1190"),
-    "Clickjacking Protection Missing": ("CWE-1021", "T1190"),
+    "Weak Content Security Policy": ("CWE-693", "T1562"),
+    "SQL Injection": ("CWE-89", "T1190"),
+    "Cross-Site Scripting (XSS)": ("CWE-79", "T1189"),
+    "Cross-Site Request Forgery (CSRF)": ("CWE-352", "T1189"),
+    "Open Redirect": ("CWE-601", "T1566"),
+    "Command Injection": ("CWE-78", "T1059"),
+    "Server-Side Template Injection (SSTI)": ("CWE-1336", "T1190"),
     "Path Traversal": ("CWE-22", "T1083"),
-    "Authentication Security Weakness": ("CWE-287", "T1078"),
-    "Insecure Direct Object Reference (IDOR)": ("CWE-639", "T1190"),
-    "GraphQL Security Weakness": ("CWE-200", "T1592"),
+    "Exposed Sensitive File": ("CWE-538", "T1552"),
+    "Sensitive File Exposure": ("CWE-538", "T1552"),
+    "Directory Listing": ("CWE-548", "T1083"),
+    "CORS Misconfiguration": ("CWE-942", "T1557"),
+    "Clickjacking": ("CWE-1021", "T1189"),
+    "Cookie Without HttpOnly": ("CWE-1004", "T1539"),
+    "Cookie Without Secure": ("CWE-614", "T1557"),
+    "Cookie Without SameSite": ("CWE-1275", "T1189"),
+    "Technology Detection": ("CWE-200", "T1592"),
+    "Information Disclosure": ("CWE-200", "T1592"),
 }
 
 
+def extract_header_name(parameter: Optional[str], evidence: Optional[str]) -> Optional[str]:
+    """Extract canonical missing HTTP header name from parameter or evidence string."""
+    if parameter:
+        p = parameter.strip().lower()
+        if p in SECURITY_HEADER_RULES or "policy" in p or "options" in p or "transport" in p or "security" in p:
+            return p
+    if evidence:
+        m = re.search(r"['\"]([a-zA-Z0-9_-]+)['\"]", evidence)
+        if m:
+            h = m.group(1).lower()
+            if h in SECURITY_HEADER_RULES:
+                return h
+        ev_lower = evidence.lower()
+        for h in SECURITY_HEADER_RULES:
+            if h in ev_lower:
+                return h
+    return (parameter or "").strip().lower() or None
+
+
 def adjust_severity(f: ScanFinding) -> ScanFinding:
+    ftype = f.type or ""
+    if "header" in ftype.lower():
+        hname = extract_header_name(f.parameter, f.evidence)
+        if hname and hname in SECURITY_HEADER_RULES:
+            f.severity = SECURITY_HEADER_RULES[hname]["severity"]
+            return f
+
     if f.confidence == "Low confidence" and f.category != "Injection":
-        idx = SEVERITY_ORDER.index(f.severity)
+        idx = SEVERITY_ORDER.index(f.severity) if f.severity in SEVERITY_ORDER else 0
         f.severity = SEVERITY_ORDER[max(0, idx - 1)]
     return f
 
@@ -60,23 +140,23 @@ def _dedup_key(f: ScanFinding) -> str:
     ftype = f.type or ""
     furl = f.url or ""
     fparam = (f.parameter or "").strip().lower()
-    fevid = (f.evidence or "").strip().lower()
+    fevid = (f.evidence or "").strip()
 
     parsed = urlparse(furl) if furl else None
     path = parsed.path if parsed and parsed.path else furl
 
-    if ftype == "Missing Security Header":
-        header_name = fparam if fparam else fevid.split(":")[0].strip()
+    if "header" in ftype.lower():
+        header_name = extract_header_name(fparam, fevid) or fparam or "generic"
         return f"header::{header_name.lower()}"
 
-    if "Cookie" in ftype:
+    if "cookie" in ftype.lower():
         return f"cookie::{ftype.lower()}::{fparam}"
 
     if ftype == "Technology Detection":
-        return f"tech::{fevid or fparam}"
+        return f"tech::{fevid.lower() or fparam}"
 
     if ftype in ("Exposed Sensitive File", "Sensitive File Exposure", "Directory Listing"):
-        return f"file::{ftype.lower()}::{path}"
+        return f"file::{ftype.lower()}::{path.lower()}"
 
     return f"vuln::{ftype.lower()}::{path.lower()}::{fparam}"
 
@@ -84,11 +164,12 @@ def _dedup_key(f: ScanFinding) -> str:
 def correlate(findings: List[ScanFinding]) -> List[ScanFinding]:
     """
     De-duplicate repeated findings across endpoints, parameters, and pages.
-    Group raw occurrences under unique findings, assign CWE/MITRE IDs,
+    Group raw occurrences under unique findings, assign consistent CWE/MITRE IDs,
     and compute detection status (Confirmed, Potential, Requires Manual Verification).
     """
     groups: Dict[str, ScanFinding] = {}
     occurrences: Dict[str, List[Dict[str, Any]]] = {}
+    affected_urls: Dict[str, List[str]] = {}
 
     for raw_f in findings:
         f = adjust_severity(raw_f)
@@ -113,6 +194,7 @@ def correlate(findings: List[ScanFinding]) -> List[ScanFinding]:
             "url": f.url,
             "method": f.method,
             "parameter": f.parameter,
+            "severity": f.severity,
             "evidence": f.evidence,
         }
 
@@ -120,31 +202,42 @@ def correlate(findings: List[ScanFinding]) -> List[ScanFinding]:
             f.raw_instances = 1
             groups[key] = f
             occurrences[key] = [occurrence_item]
+            affected_urls[key] = [f.url] if f.url else []
         else:
             rep = groups[key]
             rep.raw_instances += 1
             occurrences[key].append(occurrence_item)
+            if f.url and f.url not in affected_urls[key]:
+                affected_urls[key].append(f.url)
 
-            # Prefer higher severity or higher confidence as representative
+            # Prefer higher confidence or confirmed status as representative
             rep_sev_idx = SEVERITY_ORDER.index(rep.severity) if rep.severity in SEVERITY_ORDER else 0
             cur_sev_idx = SEVERITY_ORDER.index(f.severity) if f.severity in SEVERITY_ORDER else 0
             if cur_sev_idx > rep_sev_idx or (cur_sev_idx == rep_sev_idx and f.confidence in ("Confirmed", "High confidence")):
-                rep.severity = f.severity
                 rep.confidence = f.confidence
                 rep.detection_status = f.detection_status
-                rep.url = f.url
-                rep.parameter = f.parameter or rep.parameter
-                rep.evidence = f.evidence
 
     result = list(groups.values())
 
-    # Attach occurrences list to evidence_details
+    # Attach occurrences list, affected URLs, and enforce consistent rule metadata
     for rep in result:
         key = _dedup_key(rep)
+        hname = extract_header_name(rep.parameter, rep.evidence)
+        if "header" in (rep.type or "").lower() and hname and hname in SECURITY_HEADER_RULES:
+            rule = SECURITY_HEADER_RULES[hname]
+            rep.parameter = hname
+            rep.severity = rule["severity"]
+            rep.description = rule["description"]
+            rep.impact = rule["impact"]
+            rep.remediation = rule["remediation"]
+            rep.cwe_id = rule["cwe_id"]
+            rep.mitre_attack = rule["mitre_attack"]
+
         rep.evidence_details = {
             "unique_key": key,
             "raw_instances": rep.raw_instances,
-            "occurrences": occurrences.get(key, [])[:50],  # cap to 50 for safety/storage
+            "affected_urls": affected_urls.get(key, []),
+            "occurrences": occurrences.get(key, [])[:100],
         }
 
     # Cross-module correlation:
