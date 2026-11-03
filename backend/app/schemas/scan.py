@@ -274,6 +274,7 @@ class ApplicationResponse(BaseModel):
     auth_routes_count: int = 0
     failed_routes_count: int = 0
     coverage_percentage: float = 0.0
+    last_scanned_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

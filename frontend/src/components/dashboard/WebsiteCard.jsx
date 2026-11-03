@@ -107,12 +107,12 @@ export default function WebsiteCard({
           <div>
             <span className="text-slate-500 block text-[10px] uppercase font-medium">Last Scan</span>
             <span className="text-slate-300 font-mono">
-              {fmtDate(app.latest_scan_date)}
+              {app.last_scanned_at || app.latest_scan_date ? fmtDate(app.last_scanned_at || app.latest_scan_date) : "Never"}
             </span>
           </div>
           <div>
             <span className="text-slate-500 block text-[10px] uppercase font-medium">Status</span>
-            <StatusBadge status={app.latest_scan_status || "pending"} />
+            <StatusBadge status={app.latest_scan_status || (app.total_scans === 0 ? "not_scanned" : "pending")} />
           </div>
           <div>
             <span className="text-slate-500 block text-[10px] uppercase font-medium">Scan Duration</span>

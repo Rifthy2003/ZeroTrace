@@ -35,39 +35,70 @@ logger = logging.getLogger("api.applications")
 
 
 def _build_app_response(app: Application, db: Session) -> ApplicationResponse:
-    # Find latest scan for this application
+    # Find non-deleted scans for this application
     scans = (
         db.query(Scan)
         .filter(Scan.application_id == app.id)
+        .filter((Scan.is_deleted == False) | (Scan.is_deleted.is_(None)))
         .order_by(Scan.created_at.desc())
         .all()
     )
     total_scans = len(scans)
     latest_scan = scans[0] if scans else None
 
+    # Find latest completed scan
+    completed_scans = [s for s in scans if s.status == ScanStatus.COMPLETED]
+    latest_completed_scan = (
+        max(completed_scans, key=lambda s: s.completed_at or s.created_at)
+        if completed_scans
+        else None
+    )
+
+    last_scanned_at = (
+        (latest_completed_scan.completed_at or latest_completed_scan.created_at)
+        if latest_completed_scan
+        else None
+    )
+
     # Determine primary target URL and hostname
     target_url = None
     hostname = None
-    if latest_scan and latest_scan.target:
-        target_url = latest_scan.target.base_url
-        hostname = latest_scan.target.hostname
+    ref_scan = latest_completed_scan or latest_scan
+    if ref_scan and ref_scan.target:
+        target_url = ref_scan.target.base_url
+        hostname = ref_scan.target.hostname
     elif app.targets:
         target_url = app.targets[0].base_url
         hostname = app.targets[0].hostname
 
     latest_scan_id = latest_scan.id if latest_scan else None
-    latest_scan_date = latest_scan.created_at if latest_scan else None
+    
+    # Latest scan status
     latest_scan_status = (
         (latest_scan.status.value if hasattr(latest_scan.status, "value") else str(latest_scan.status))
         if latest_scan
         else None
     )
 
-    latest_scan_duration = None
-    if latest_scan and latest_scan.started_at and latest_scan.completed_at:
-        latest_scan_duration = round((latest_scan.completed_at - latest_scan.started_at).total_seconds(), 1)
+    # Latest scan date:
+    # - If running scan, show start/creation date
+    # - If completed scan exists, show completion/creation date
+    # - If failed scan and no completed scan, show failed scan date
+    latest_scan_date = None
+    if latest_scan:
+        if latest_scan.status == ScanStatus.RUNNING:
+            latest_scan_date = latest_scan.started_at or latest_scan.created_at
+        elif latest_completed_scan:
+            latest_scan_date = latest_completed_scan.completed_at or latest_completed_scan.created_at
+        else:
+            latest_scan_date = latest_scan.created_at
 
-    # Posture calculations
+    latest_scan_duration = None
+    if ref_scan and ref_scan.started_at and ref_scan.completed_at:
+        latest_scan_duration = round((ref_scan.completed_at - ref_scan.started_at).total_seconds(), 1)
+
+    # Posture calculations: use latest_completed_scan so running/failed scans don't wipe out scores
+    posture_scan = latest_completed_scan or latest_scan
     latest_score = None
     latest_rating = None
     latest_rating_color = None
@@ -79,11 +110,11 @@ def _build_app_response(app: Application, db: Session) -> ApplicationResponse:
     failed_routes_count = 0
     coverage_percentage = 0.0
 
-    if latest_scan:
-        discovered_routes_count = latest_scan.urls_discovered or 0
-        tested_routes_count = latest_scan.urls_scanned or 0
+    if posture_scan:
+        discovered_routes_count = posture_scan.urls_discovered or 0
+        tested_routes_count = posture_scan.urls_scanned or 0
 
-        route_sum = latest_scan.route_summary or {}
+        route_sum = posture_scan.route_summary or {}
         if isinstance(route_sum, dict):
             auth_routes = route_sum.get("routes_auth_required", [])
             failed_routes = route_sum.get("routes_failed", [])
@@ -95,9 +126,9 @@ def _build_app_response(app: Application, db: Session) -> ApplicationResponse:
         elif tested_routes_count > 0:
             coverage_percentage = 100.0
 
-        # Calculate posture from latest scan findings
-        findings = db.query(Finding).filter(Finding.scan_id == latest_scan.id).all()
-        posture = calculate_security_posture(latest_scan, findings)
+        # Calculate posture from posture scan findings
+        findings = db.query(Finding).filter(Finding.scan_id == posture_scan.id).all()
+        posture = calculate_security_posture(posture_scan, findings)
         latest_score = posture["score"]
         latest_rating = posture["rating"]
         latest_rating_color = posture["rating_color"]
@@ -131,17 +162,27 @@ def _build_app_response(app: Application, db: Session) -> ApplicationResponse:
         auth_routes_count=auth_routes_count,
         failed_routes_count=failed_routes_count,
         coverage_percentage=coverage_percentage,
+        last_scanned_at=last_scanned_at,
     )
 
 
 def auto_sync_unassigned_scans(db: Session):
     """
-    Ensure all scans and targets are grouped into Applications based on netloc/port.
+    Ensure all scans and targets with scans are grouped into Applications based on netloc/port.
     Handles dynamic localhost ports correctly by creating a dedicated application per port.
+    Prevents orphan targets with no scans from creating unwanted applications.
     """
-    targets = db.query(Target).filter(Target.application_id.is_(None)).all()
+    # Only sync targets that actually have associated scans to prevent orphan demo/test leakage
+    targets = (
+        db.query(Target)
+        .filter(Target.application_id.is_(None))
+        .filter(Target.scans.any())
+        .all()
+    )
     for t in targets:
         netloc = urlparse(t.base_url).netloc or t.hostname
+        if not netloc:
+            continue
         app = db.query(Application).filter(Application.name == netloc).first()
         if not app:
             app = Application(name=netloc, description=f"Monitored web application on {t.base_url}")
@@ -152,14 +193,64 @@ def auto_sync_unassigned_scans(db: Session):
         db.query(Scan).filter(Scan.target_id == t.id, Scan.application_id.is_(None)).update(
             {"application_id": app.id}
         )
+
+    # Also associate any orphan scans whose targets already have an application_id or netloc
+    unassigned_scans = db.query(Scan).filter(Scan.application_id.is_(None)).all()
+    for s in unassigned_scans:
+        if s.target and s.target.application_id:
+            s.application_id = s.target.application_id
+        elif s.target:
+            netloc = urlparse(s.target.base_url).netloc or s.target.hostname
+            if not netloc:
+                continue
+            app = db.query(Application).filter(Application.name == netloc).first()
+            if not app:
+                app = Application(name=netloc, description=f"Monitored web application on {s.target.base_url}")
+                db.add(app)
+                db.flush()
+            s.target.application_id = app.id
+            s.target.name = app.name
+            s.application_id = app.id
     db.commit()
 
 
 @router.get("", response_model=List[ApplicationResponse])
 def list_applications(db: Session = Depends(get_db)):
     auto_sync_unassigned_scans(db)
-    apps = db.query(Application).order_by(Application.name.asc()).all()
-    return [_build_app_response(app, db) for app in apps]
+    apps = db.query(Application).all()
+    app_responses = [_build_app_response(app, db) for app in apps]
+
+    # Filter out empty orphan apps that have 0 scans and no target or are unassociated test fixtures
+    valid_apps = [
+        a for a in app_responses
+        if not (a.total_scans == 0 and not a.target_url and not a.description)
+    ]
+
+    # Sorting order according to requirements:
+    # 1. Running scans at the absolute top (tier = 2)
+    # 2. Most recently scanned targets (last_scanned_at descending) (tier = 1)
+    # 3. Never-scanned targets at the bottom (last_scanned_at is None) (tier = 0), sorted by created_at desc
+    # Consistent secondary sorting: created_at desc, then id/name
+    def sort_key(item: ApplicationResponse):
+        is_running = item.latest_scan_status == "running"
+        has_completed = item.last_scanned_at is not None
+        tier = 2 if is_running else (1 if has_completed else 0)
+
+        if is_running:
+            primary_time = item.latest_scan_date or item.created_at
+        elif has_completed:
+            primary_time = item.last_scanned_at
+        else:
+            primary_time = item.created_at
+
+        ts = primary_time or datetime.min
+        secondary_ts = item.created_at or datetime.min
+        name_key = (item.name or "").lower()
+
+        return (tier, ts, secondary_ts, name_key)
+
+    valid_apps.sort(key=sort_key, reverse=True)
+    return valid_apps
 
 
 @router.post("", response_model=ApplicationResponse, status_code=201)

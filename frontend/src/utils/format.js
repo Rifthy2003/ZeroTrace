@@ -20,6 +20,8 @@ export const STATUS_COLORS = {
   pending: "bg-amber-500/20 text-amber-400 border-amber-500/30",
   failed: "bg-rose-500/20 text-rose-400 border-rose-500/30",
   cancelled: "bg-slate-700 text-slate-400 border-slate-600",
+  not_scanned: "bg-slate-800 text-slate-400 border-slate-700",
+  "not scanned": "bg-slate-800 text-slate-400 border-slate-700",
 };
 
 export const LIFECYCLE_STATUS_COLORS = {

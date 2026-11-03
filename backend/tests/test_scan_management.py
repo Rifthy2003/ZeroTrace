@@ -29,7 +29,16 @@ def sample_target(db_session):
     )
     db_session.add(t)
     db_session.commit()
-    return t
+    try:
+        yield t
+    finally:
+        # Clean up any leftover scans or target to avoid test fixture leaks
+        try:
+            db_session.query(Scan).filter(Scan.target_id == t.id).delete()
+            db_session.delete(t)
+            db_session.commit()
+        except Exception:
+            db_session.rollback()
 
 
 def test_rename_scan(sample_target, db_session):
