@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, String, DateTime, Integer, ForeignKey, JSON
+from sqlalchemy import Column, String, DateTime, Integer, ForeignKey, JSON, Boolean
 from sqlalchemy.orm import relationship
 from app.database.session import Base
 
@@ -19,6 +19,11 @@ class Endpoint(Base):
     redirected_to = Column(String, nullable=True)
     response_headers = Column(JSON, default=dict)
     has_form = Column(String, default="false")
+    source = Column(String, default="crawler")
+    endpoint_type = Column(String, default="page")
+    is_tested = Column(Boolean, default=False)
+    testing_status = Column(String, default="untested")
+    modules_executed = Column(JSON, default=list)
 
     discovered_at = Column(DateTime, default=datetime.utcnow)
 

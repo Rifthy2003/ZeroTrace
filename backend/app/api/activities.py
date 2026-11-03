@@ -10,13 +10,14 @@ from sqlalchemy.orm import Session
 
 from app.database.session import get_db
 from app.models.activity import Activity
-from app.models.finding import Finding, Severity
+from app.models.finding import Finding, FindingStatusHistory, Severity
 from app.models.scan import Scan
 from app.reports.bug_bounty_report import build_bug_bounty_markdown, build_bug_bounty_pdf
 from app.schemas.scan import (
     ActivityResponse,
     FindingResponse,
     FindingStatusUpdateRequest,
+    FindingStatusHistoryResponse,
 )
 from app.services.remediation import record_activity
 
@@ -69,6 +70,34 @@ def list_activities(
     ]
 
 
+CANONICAL_LIFECYCLE_MAP = {
+    "new": "New",
+    "open": "New",
+    "confirmed": "Confirmed",
+    "requires manual verification": "Requires Manual Verification",
+    "requires_manual_verification": "Requires Manual Verification",
+    "manual_verification": "Requires Manual Verification",
+    "false positive": "False Positive",
+    "false_positive": "False Positive",
+    "accepted risk": "Accepted Risk",
+    "accepted_risk": "Accepted Risk",
+    "in progress": "In Progress",
+    "in_progress": "In Progress",
+    "fixed": "Fixed",
+    "reopened": "Reopened",
+}
+VALID_RESEARCHER_STATUSES = [
+    "New",
+    "Confirmed",
+    "Requires Manual Verification",
+    "False Positive",
+    "Accepted Risk",
+    "In Progress",
+    "Fixed",
+    "Reopened",
+]
+
+
 @router.patch("/api/findings/{finding_id}/status", response_model=FindingResponse)
 def update_finding_status(
     finding_id: str,
@@ -79,13 +108,29 @@ def update_finding_status(
     if not finding:
         raise HTTPException(404, "Finding not found")
 
-    valid_statuses = {"open", "fixed", "accepted_risk", "reopened"}
-    new_status = req.status.lower().strip()
-    if new_status not in valid_statuses:
-        raise HTTPException(422, f"Status must be one of: {list(valid_statuses)}")
+    raw_status = (req.status or "").strip().lower()
+    canonical_status = CANONICAL_LIFECYCLE_MAP.get(raw_status)
+    if not canonical_status:
+        raise HTTPException(
+            422,
+            f"Invalid lifecycle status '{req.status}'. Must be one of: {VALID_RESEARCHER_STATUSES}",
+        )
 
-    old_status = finding.status or "open"
-    finding.status = new_status
+    old_status = finding.status or "New"
+    user_name = req.user.strip() if req.user and req.user.strip() else "Security Researcher"
+
+    # Record status transition in audit history
+    history_entry = FindingStatusHistory(
+        finding_id=finding.id,
+        old_status=old_status,
+        new_status=canonical_status,
+        note=req.note,
+        user=user_name,
+        timestamp=datetime.utcnow(),
+    )
+    db.add(history_entry)
+
+    finding.status = canonical_status
     if req.note is not None:
         finding.status_note = req.note
     finding.status_updated_at = datetime.utcnow()
@@ -94,25 +139,49 @@ def update_finding_status(
 
     scan = finding.scan
     app_id = scan.application_id if scan else None
-    target_base = scan.target.base_url if scan and scan.target else "target"
 
-    label = new_status.replace("_", " ").title()
     record_activity(
         db,
         event_type="status_updated",
-        title=f"Finding Marked as {label}",
-        description=f"Vulnerability '{finding.type}' on {finding.url} updated from {old_status} to {new_status}.",
+        title=f"Finding Marked as {canonical_status}",
+        description=f"Vulnerability '{finding.type}' on {finding.url} updated from {old_status} to {canonical_status} by {user_name}.",
         scan_id=scan.id if scan else None,
         application_id=app_id,
-        severity="info" if new_status != "reopened" else "warning",
-        metadata={"finding_id": finding.id, "old_status": old_status, "new_status": new_status, "type": finding.type},
+        severity="info" if canonical_status != "Reopened" else "warning",
+        metadata={
+            "finding_id": finding.id,
+            "old_status": old_status,
+            "new_status": canonical_status,
+            "type": finding.type,
+            "user": user_name,
+            "note": req.note,
+        },
     )
 
     r = FindingResponse.model_validate(finding)
     r.severity = finding.severity.value if hasattr(finding.severity, "value") else str(finding.severity)
     r.confidence = finding.confidence.value if hasattr(finding.confidence, "value") else str(finding.confidence)
     r.status = finding.status
+    r.status_history = [
+        FindingStatusHistoryResponse.model_validate(h).model_dump()
+        for h in (finding.status_history or [])
+    ]
     return r
+
+
+@router.get("/api/findings/{finding_id}/history", response_model=List[FindingStatusHistoryResponse])
+def get_finding_history(finding_id: str, db: Session = Depends(get_db)):
+    finding = db.get(Finding, finding_id)
+    if not finding:
+        raise HTTPException(404, "Finding not found")
+
+    history = (
+        db.query(FindingStatusHistory)
+        .filter(FindingStatusHistory.finding_id == finding_id)
+        .order_by(FindingStatusHistory.timestamp.desc())
+        .all()
+    )
+    return history
 
 
 @router.get("/api/findings/remediation-tracker")
@@ -164,6 +233,10 @@ def get_finding(finding_id: str, db: Session = Depends(get_db)):
                 r.severity = SECURITY_HEADER_RULES[hname]["severity"].value
     if not r.raw_instances:
         r.raw_instances = 1
+    r.status_history = [
+        FindingStatusHistoryResponse.model_validate(h).model_dump()
+        for h in (finding.status_history or [])
+    ]
     return r
 
 

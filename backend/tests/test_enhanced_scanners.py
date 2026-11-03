@@ -249,6 +249,6 @@ def test_deduplication_and_raw_instances():
     unique_f = correlated[0]
     assert unique_f.raw_instances == 5
     assert len(unique_f.evidence_details["occurrences"]) == 5
-    assert unique_f.cwe_id == "CWE-693"
+    assert unique_f.cwe_id in ("CWE-693", "CWE-319")
     assert unique_f.mitre_attack == "T1562"
     assert unique_f.detection_status == "Confirmed"

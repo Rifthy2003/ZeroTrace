@@ -12,6 +12,9 @@ from app.models.application import Application
 from app.models.finding import Finding, Severity, Confidence
 from app.models.scan import Scan, ScanStatus
 from app.models.target import Target
+from app.models.profile import ScanProfile, ScanProgram
+from app.models.endpoint import Endpoint
+from app.scanner.scope_enforcer import validate_url_in_scope, compute_effective_scan_config
 from app.reports.assessment_summary import build_assessment_summary_pdf
 from app.reports.bug_bounty_report import build_complete_website_bug_bounty_pdf
 from app.reports.pdf_report import build_report
@@ -22,9 +25,14 @@ from app.schemas.scan import (
     ScanBulkActionRequest,
     ScanResponse,
     FindingResponse,
+    FindingStatusHistoryResponse,
     ScanSummaryResponse,
     SecurityPostureResponse,
     ExecutiveOverviewResponse,
+    ScanComparisonResponse,
+    ComparedFindingItem,
+    EndpointCoverageResponse,
+    EndpointCoverageItem,
 )
 from app.scanner.severity import extract_header_name, SECURITY_HEADER_RULES, CWE_MITRE_MAP
 from app.services.remediation import record_activity
@@ -49,6 +57,14 @@ def _scan_response(scan: Scan) -> ScanResponse:
         data.duration_seconds = round((scan.completed_at - scan.started_at).total_seconds(), 1)
     if not data.coverage_summary and hasattr(scan, "coverage_summary"):
         data.coverage_summary = scan.coverage_summary
+
+    data.profile_id = getattr(scan, "profile_id", None)
+    data.profile_name = getattr(scan, "profile_name", None)
+    raw_st = getattr(scan, "scan_type", None) or getattr(scan, "profile_name", None) or "Quick Scan"
+    data.scan_type = "Full Scan" if "full" in str(raw_st).lower() else "Quick Scan"
+    data.program_id = getattr(scan, "program_id", None)
+    data.program_name = getattr(scan, "program_name", None)
+    data.effective_restrictions = getattr(scan, "effective_restrictions", None)
 
     findings = getattr(scan, "findings", None)
     if findings is not None:
@@ -90,6 +106,14 @@ def _finding_response(f: Finding) -> FindingResponse:
             r.detection_status = "Requires Manual Verification"
     if not r.raw_instances:
         r.raw_instances = 1
+    r.fingerprint = getattr(f, "fingerprint", None)
+    r.status_note = getattr(f, "status_note", None)
+    r.status_updated_at = getattr(f, "status_updated_at", None)
+    if hasattr(f, "status_history") and f.status_history:
+        r.status_history = [
+            FindingStatusHistoryResponse.model_validate(h)
+            for h in f.status_history
+        ]
     return r
 
 
@@ -220,6 +244,51 @@ async def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db)):
     if req.max_depth < 0 or req.max_urls < 1 or req.request_delay < 0:
         raise HTTPException(422, "Invalid crawl limits")
 
+    # Resolve scan_type: Quick Scan or Full Scan
+    raw_type = (req.scan_type or req.profile_id or "").strip().lower()
+    scan_type = "Full Scan" if "full" in raw_type else "Quick Scan"
+
+    # Load ScanProfile (match scan_type: "Full Scan" or "Quick Scan")
+    profile = None
+    if req.profile_id:
+        profile = db.get(ScanProfile, req.profile_id)
+    if not profile:
+        profile = db.query(ScanProfile).filter(ScanProfile.name == scan_type).first()
+    if not profile:
+        profile = db.query(ScanProfile).filter(ScanProfile.is_default == True).first()
+
+    # Load ScanProgram (if specified)
+    program = None
+    if req.program_id:
+        program = db.get(ScanProgram, req.program_id)
+        if not program:
+            raise HTTPException(404, f"Bug bounty program '{req.program_id}' not found")
+
+        # Validate automated scanning restriction
+        if not program.allow_automated_scanning:
+            raise HTTPException(403, "Automated scanning is prohibited for this bug bounty program.")
+
+        # Validate target URL against program scope
+        in_scope, reason = validate_url_in_scope(
+            url,
+            target_domains=program.target_domains,
+            url_patterns=program.url_patterns,
+            out_of_scope_paths=program.out_of_scope_paths,
+        )
+        if not in_scope:
+            raise HTTPException(403, f"Target URL is out of scope for program '{program.name}': {reason}")
+
+    effective = compute_effective_scan_config(
+        profile=profile,
+        program=program,
+        user_overrides={
+            "modules": req.modules,
+            "max_depth": req.max_depth,
+            "max_urls": req.max_urls,
+            "request_delay": req.request_delay,
+        },
+    )
+
     # Associate with Application
     app = None
     if req.application_id:
@@ -253,12 +322,18 @@ async def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db)):
     scan = Scan(
         target_id=target.id,
         application_id=app.id if app else None,
-        max_depth=req.max_depth,
-        max_urls=req.max_urls,
-        request_delay=req.request_delay,
-        modules=req.modules,
+        max_depth=effective["max_depth"],
+        max_urls=effective["max_urls"],
+        request_delay=effective["request_delay"],
+        modules=effective["effective_modules"],
         enable_browser_discovery=req.enable_browser_discovery,
         auth_config=req.auth_config,
+        profile_id=profile.id if profile else None,
+        profile_name=scan_type,
+        scan_type=scan_type,
+        program_id=program.id if program else None,
+        program_name=program.name if program else None,
+        effective_restrictions=effective.get("effective_restrictions"),
     )
     db.add(scan)
     db.commit()
@@ -465,14 +540,177 @@ def overview(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/compare", response_model=ScanComparisonResponse)
+def compare_scans(base_scan_id: str, target_scan_id: str, db: Session = Depends(get_db)):
+    base_scan = _get_scan(db, base_scan_id)
+    target_scan = _get_scan(db, target_scan_id)
+
+    # Normalized target domain
+    base_url = base_scan.target.base_url if base_scan.target else ""
+    target_url = target_scan.target.base_url if target_scan.target else ""
+    base_domain = urlparse(base_url).netloc or urlparse(base_url).hostname or ""
+    target_domain = urlparse(target_url).netloc or urlparse(target_url).hostname or ""
+
+    # Security scores
+    base_posture = calculate_security_posture(db, base_scan.id)
+    target_posture = calculate_security_posture(db, target_scan.id)
+    base_score = base_posture["score"] if isinstance(base_posture, dict) else getattr(base_posture, "score", 100.0)
+    target_score = target_posture["score"] if isinstance(target_posture, dict) else getattr(target_posture, "score", 100.0)
+    score_delta = round(target_score - base_score, 1)
+
+    # Group findings
+    base_grouped = group_scan_findings(base_scan.findings or [])
+    target_grouped = group_scan_findings(target_scan.findings or [])
+
+    # Map by stable key
+    def _make_key(f: FindingResponse) -> str:
+        if f.fingerprint:
+            return f.fingerprint
+        if "header" in f.type.lower():
+            hname = (f.parameter or "").lower()
+            return f"header::{hname}"
+        parsed = urlparse(f.url or "")
+        path = parsed.path if parsed and parsed.path else (f.url or "")
+        return f"{f.type.lower()}::{path.lower()}::{(f.parameter or '').lower()}"
+
+    base_map = {_make_key(f): f for f in base_grouped}
+    target_map = {_make_key(f): f for f in target_grouped}
+
+    all_keys = set(base_map.keys()) | set(target_map.keys())
+    compared_items: list[ComparedFindingItem] = []
+
+    counts_summary = {"new": 0, "fixed": 0, "recurring": 0, "unchanged": 0}
+
+    for key in all_keys:
+        in_base = key in base_map
+        in_target = key in target_map
+
+        if in_target and not in_base:
+            c_status = "new"
+            f_rep = target_map[key]
+            base_id = None
+            target_id = f_rep.id
+        elif in_base and not in_target:
+            c_status = "fixed"
+            f_rep = base_map[key]
+            base_id = f_rep.id
+            target_id = None
+        else:
+            base_item = base_map[key]
+            f_rep = target_map[key]
+            base_id = base_item.id
+            target_id = f_rep.id
+
+            # Check if base item was marked fixed or resolved in status history
+            is_resolved = str(base_item.status).lower() in ("fixed", "accepted risk")
+            has_fixed_history = False
+            if hasattr(base_item, "status_history") and base_item.status_history:
+                has_fixed_history = any(str(h.get("new_status")).lower() in ("fixed", "fixed finding") for h in base_item.status_history)
+
+            if is_resolved or has_fixed_history or str(base_item.status).lower() in ("reopened",):
+                c_status = "recurring"
+            else:
+                c_status = "unchanged"
+
+        counts_summary[c_status] += 1
+
+        aff_urls = f_rep.evidence_details.get("affected_urls", []) if f_rep.evidence_details else []
+        if not aff_urls and f_rep.url:
+            aff_urls = [f_rep.url]
+
+        compared_items.append(
+            ComparedFindingItem(
+                fingerprint=key,
+                type=f_rep.type,
+                category=getattr(f_rep, "category", "Vulnerability") or "Vulnerability",
+                url=f_rep.url or "",
+                method=f_rep.method or "GET",
+                parameter=f_rep.parameter,
+                severity=f_rep.severity,
+                status=f_rep.status,
+                comparison_status=c_status,
+                base_finding_id=base_id,
+                target_finding_id=target_id,
+                affected_urls=aff_urls,
+                raw_instances=f_rep.raw_instances or 1,
+                evidence_snippet=(f_rep.evidence or "")[:200],
+            )
+        )
+
+    # Sort compared items: status priority (new, recurring, unchanged, fixed), then severity
+    status_rank = {"new": 4, "recurring": 3, "unchanged": 2, "fixed": 1}
+    sev_rank = {"Critical": 5, "High": 4, "Medium": 3, "Low": 2, "Informational": 1}
+    compared_items.sort(
+        key=lambda x: (status_rank.get(x.comparison_status, 0), sev_rank.get(x.severity, 0)),
+        reverse=True,
+    )
+
+    # Severity distribution changes
+    sev_keys = ["Critical", "High", "Medium", "Low", "Informational"]
+    base_sev = {s: 0 for s in sev_keys}
+    target_sev = {s: 0 for s in sev_keys}
+    for f in base_grouped:
+        if f.severity in base_sev:
+            base_sev[f.severity] += 1
+    for f in target_grouped:
+        if f.severity in target_sev:
+            target_sev[f.severity] += 1
+    delta_sev = {s: target_sev[s] - base_sev[s] for s in sev_keys}
+
+    severity_changes = {
+        "base": base_sev,
+        "target": target_sev,
+        "delta": delta_sev,
+    }
+
+    # Endpoint coverage changes
+    base_cov = base_scan.coverage_summary or {}
+    target_cov = target_scan.coverage_summary or {}
+    coverage_changes = {
+        "base_coverage_pct": base_cov.get("coverage_percentage", 0.0),
+        "target_coverage_pct": target_cov.get("coverage_percentage", 0.0),
+        "coverage_delta": round(target_cov.get("coverage_percentage", 0.0) - base_cov.get("coverage_percentage", 0.0), 1),
+        "base_endpoints": base_cov.get("endpoints_discovered", 0),
+        "target_endpoints": target_cov.get("endpoints_discovered", 0),
+        "endpoints_delta": target_cov.get("endpoints_discovered", 0) - base_cov.get("endpoints_discovered", 0),
+        "base_tested": base_cov.get("endpoints_tested", 0),
+        "target_tested": target_cov.get("endpoints_tested", 0),
+    }
+
+    return ScanComparisonResponse(
+        base_scan=_scan_response(base_scan),
+        target_scan=_scan_response(target_scan),
+        target_domain=target_domain or base_domain,
+        base_score=base_score,
+        target_score=target_score,
+        score_delta=score_delta,
+        base_unique_count=len(base_grouped),
+        target_unique_count=len(target_grouped),
+        count_delta=len(target_grouped) - len(base_grouped),
+        severity_changes=severity_changes,
+        coverage_changes=coverage_changes,
+        findings_summary=counts_summary,
+        compared_findings=compared_items,
+    )
+
+
 @router.get("/{scan_id}", response_model=ScanResponse)
 def get_scan(scan_id: str, db: Session = Depends(get_db)):
     return _scan_response(_get_scan(db, scan_id))
 
 
 @router.get("/{scan_id}/findings", response_model=list[FindingResponse])
-def get_findings(scan_id: str, severity: str | None = None, confidence: str | None = None,
-                 type: str | None = None, url: str | None = None, db: Session = Depends(get_db)):
+def get_findings(
+    scan_id: str,
+    severity: str | None = None,
+    confidence: str | None = None,
+    type: str | None = None,
+    url: str | None = None,
+    lifecycle_status: str | None = None,
+    detection_status: str | None = None,
+    search: str | None = None,
+    db: Session = Depends(get_db),
+):
     _get_scan(db, scan_id)
     raw_findings = db.query(Finding).filter(Finding.scan_id == scan_id).all()
     grouped = group_scan_findings(raw_findings)
@@ -483,6 +721,10 @@ def get_findings(scan_id: str, severity: str | None = None, confidence: str | No
         grouped = [f for f in grouped if f.confidence.lower() == confidence.lower()]
     if type:
         grouped = [f for f in grouped if f.type == type]
+    if lifecycle_status:
+        grouped = [f for f in grouped if (f.status or "").lower() == lifecycle_status.lower()]
+    if detection_status:
+        grouped = [f for f in grouped if (f.detection_status or "").lower() == detection_status.lower()]
     if url:
         u_lower = url.lower()
         grouped = [
@@ -491,7 +733,133 @@ def get_findings(scan_id: str, severity: str | None = None, confidence: str | No
                 u_lower in aff.lower() for aff in (f.evidence_details.get("affected_urls") or [])
             )
         ]
+    if search:
+        s_lower = search.lower()
+        grouped = [
+            f for f in grouped
+            if s_lower in (f.type or "").lower()
+            or s_lower in (f.parameter or "").lower()
+            or s_lower in (f.url or "").lower()
+            or s_lower in (f.description or "").lower()
+            or s_lower in (f.cwe_id or "").lower()
+        ]
     return grouped
+
+
+@router.get("/{scan_id}/comparable-scans", response_model=list[ScanResponse])
+def get_comparable_scans(scan_id: str, db: Session = Depends(get_db)):
+    scan = _get_scan(db, scan_id)
+    hostname = scan.target.hostname if scan.target else None
+    app_id = scan.application_id
+
+    q = db.query(Scan).filter(
+        Scan.status == ScanStatus.COMPLETED,
+        Scan.id != scan_id,
+        (Scan.is_deleted == False) | (Scan.is_deleted == None),
+    )
+    if app_id:
+        q = q.filter(Scan.application_id == app_id)
+    elif hostname:
+        q = q.join(Target, Scan.target_id == Target.id).filter(Target.hostname == hostname)
+
+    return [_scan_response(s) for s in q.order_by(Scan.created_at.desc()).all()]
+
+
+@router.get("/{scan_id}/coverage", response_model=EndpointCoverageResponse)
+def get_scan_coverage(scan_id: str, db: Session = Depends(get_db)):
+    scan = _get_scan(db, scan_id)
+    endpoints = db.query(Endpoint).filter(Endpoint.scan_id == scan_id).all()
+    findings = db.query(Finding).filter(Finding.scan_id == scan_id).all()
+
+    disc_pages = sum(1 for e in endpoints if getattr(e, "endpoint_type", "page") == "page")
+    disc_endpoints = len(endpoints)
+    disc_forms = sum(1 for e in endpoints if str(getattr(e, "has_form", "false")).lower() == "true")
+    disc_params = sum(len(e.parameters) for e in endpoints)
+
+    tested_endpoints = sum(1 for e in endpoints if getattr(e, "is_tested", False))
+    untested_endpoints = max(0, disc_endpoints - tested_endpoints)
+
+    cov_sum = scan.coverage_summary or {}
+    tested_params = cov_sum.get("parameters_tested", sum(len(e.parameters) for e in endpoints if getattr(e, "is_tested", False)))
+    untested_params = max(0, disc_params - tested_params)
+
+    succ_reqs = sum(1 for e in endpoints if e.status_code and 200 <= e.status_code < 400)
+    failed_reqs = sum(1 for e in endpoints if (e.status_code and e.status_code >= 500) or getattr(e, "testing_status", "") == "failed")
+    auth_reqs = sum(1 for e in endpoints if (e.status_code in (401, 403)) or getattr(e, "testing_status", "") == "auth_required")
+    skipped_eps = sum(1 for e in endpoints if getattr(e, "testing_status", "") == "skipped" or (not getattr(e, "is_tested", False) and (not e.status_code or e.status_code not in (401, 403))))
+
+    cov_pct = cov_sum.get("coverage_percentage")
+    if cov_pct is None:
+        cov_pct = round((tested_endpoints / max(1, disc_endpoints)) * 100, 1)
+
+    # Method distribution
+    method_dist: dict[str, int] = {}
+    for e in endpoints:
+        m = (e.method or "GET").upper()
+        method_dist[m] = method_dist.get(m, 0) + 1
+
+    module_matrix = cov_sum.get("module_matrix", [])
+
+    endpoint_items: list[EndpointCoverageItem] = []
+    for e in endpoints:
+        e_path = urlparse(e.url).path if e.url else ""
+        matched_findings = [
+            {
+                "id": f.id,
+                "type": f.type,
+                "severity": f.severity.value if hasattr(f.severity, "value") else str(f.severity),
+                "parameter": f.parameter,
+            }
+            for f in findings
+            if (f.url == e.url) or (urlparse(f.url).path == e_path and f.method == e.method)
+        ]
+
+        endpoint_items.append(
+            EndpointCoverageItem(
+                id=e.id,
+                url=e.url,
+                method=e.method or "GET",
+                endpoint_type=getattr(e, "endpoint_type", "page") or "page",
+                source=getattr(e, "source", "crawler") or "crawler",
+                status_code=e.status_code,
+                parameters=[
+                    {"name": p.name, "location": p.location, "sample_value": p.sample_value}
+                    for p in e.parameters
+                ],
+                testing_status=getattr(e, "testing_status", "untested") or "untested",
+                is_tested=bool(getattr(e, "is_tested", False)),
+                modules_executed=getattr(e, "modules_executed", []) or [],
+                findings_count=len(matched_findings),
+                findings=matched_findings,
+            )
+        )
+
+    target_base = scan.target.base_url if scan.target else ""
+    hostname = scan.target.hostname if scan.target else (urlparse(target_base).hostname or "unknown")
+
+    return EndpointCoverageResponse(
+        scan_id=scan.id,
+        target_url=target_base,
+        hostname=hostname,
+        scan_status=scan.status.value if hasattr(scan.status, "value") else str(scan.status),
+        created_at=scan.created_at,
+        discovered_pages=disc_pages,
+        discovered_endpoints=disc_endpoints,
+        discovered_forms=disc_forms,
+        discovered_parameters=disc_params,
+        tested_endpoints=tested_endpoints,
+        untested_endpoints=untested_endpoints,
+        tested_parameters=tested_params,
+        untested_parameters=untested_params,
+        successful_requests=succ_reqs,
+        failed_requests=failed_reqs,
+        skipped_endpoints=skipped_eps,
+        auth_protected_endpoints=auth_reqs,
+        coverage_percentage=cov_pct,
+        method_distribution=method_dist,
+        module_matrix=module_matrix,
+        endpoints=endpoint_items,
+    )
 
 
 @router.get("/{scan_id}/summary", response_model=ScanSummaryResponse)

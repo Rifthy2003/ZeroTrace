@@ -23,11 +23,35 @@ export const STATUS_COLORS = {
 };
 
 export const LIFECYCLE_STATUS_COLORS = {
-  open: { bg: "bg-rose-500/15 text-rose-300 border-rose-500/30", label: "Open" },
+  "New": { bg: "bg-blue-500/15 text-blue-300 border-blue-500/30", label: "New" },
+  "Confirmed": { bg: "bg-rose-500/15 text-rose-300 border-rose-500/30", label: "Confirmed" },
+  "Requires Manual Verification": { bg: "bg-amber-500/15 text-amber-300 border-amber-500/30", label: "Requires Manual Verification" },
+  "False Positive": { bg: "bg-slate-500/20 text-slate-400 border-slate-500/30", label: "False Positive" },
+  "Accepted Risk": { bg: "bg-purple-500/15 text-purple-300 border-purple-500/30", label: "Accepted Risk" },
+  "In Progress": { bg: "bg-cyan-500/15 text-cyan-300 border-cyan-500/30", label: "In Progress" },
+  "Fixed": { bg: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30", label: "Fixed" },
+  "Reopened": { bg: "bg-orange-500/15 text-orange-300 border-orange-500/30", label: "Reopened" },
+  open: { bg: "bg-blue-500/15 text-blue-300 border-blue-500/30", label: "New" },
+  new: { bg: "bg-blue-500/15 text-blue-300 border-blue-500/30", label: "New" },
+  confirmed: { bg: "bg-rose-500/15 text-rose-300 border-rose-500/30", label: "Confirmed" },
+  requires_manual_verification: { bg: "bg-amber-500/15 text-amber-300 border-amber-500/30", label: "Requires Manual Verification" },
+  false_positive: { bg: "bg-slate-500/20 text-slate-400 border-slate-500/30", label: "False Positive" },
+  accepted_risk: { bg: "bg-purple-500/15 text-purple-300 border-purple-500/30", label: "Accepted Risk" },
+  in_progress: { bg: "bg-cyan-500/15 text-cyan-300 border-cyan-500/30", label: "In Progress" },
   fixed: { bg: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30", label: "Fixed" },
-  accepted_risk: { bg: "bg-amber-500/15 text-amber-300 border-amber-500/30", label: "Accepted Risk" },
-  reopened: { bg: "bg-purple-500/15 text-purple-300 border-purple-500/30", label: "Reopened" },
+  reopened: { bg: "bg-orange-500/15 text-orange-300 border-orange-500/30", label: "Reopened" },
 };
+
+export const ALL_LIFECYCLE_STATUSES = [
+  "New",
+  "Confirmed",
+  "Requires Manual Verification",
+  "False Positive",
+  "Accepted Risk",
+  "In Progress",
+  "Fixed",
+  "Reopened",
+];
 
 export const fmtDate = (d) => {
   if (!d) return "—";
@@ -51,4 +75,3 @@ export const fmtDuration = (sec) => {
   const s = Math.round(sec % 60);
   return `${m}m ${s}s`;
 };
-

@@ -59,3 +59,23 @@ class Finding(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)
 
     scan = relationship("Scan", back_populates="findings")
+    status_history = relationship(
+        "FindingStatusHistory",
+        back_populates="finding",
+        cascade="all, delete-orphan",
+        order_by="FindingStatusHistory.timestamp.desc()",
+    )
+
+
+class FindingStatusHistory(Base):
+    __tablename__ = "finding_status_history"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    finding_id = Column(String, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False, index=True)
+    old_status = Column(String, nullable=True)
+    new_status = Column(String, nullable=False)
+    note = Column(Text, nullable=True)
+    user = Column(String, default="Security Researcher", nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    finding = relationship("Finding", back_populates="status_history")

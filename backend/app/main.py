@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import scans, applications, activities
+from app.api import scans, applications, activities, profiles
 from app.core.config import settings
 from app.core.logging_config import configure_logging
 from app.database.session import init_db
@@ -48,6 +48,7 @@ async def rate_limit(request: Request, call_next):
 app.include_router(scans.router)
 app.include_router(applications.router)
 app.include_router(activities.router)
+app.include_router(profiles.router)
 
 
 @app.get("/api/health")

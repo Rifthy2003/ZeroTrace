@@ -35,6 +35,12 @@ class Scan(Base):
     route_summary = Column(JSON, default=dict)
     coverage_summary = Column(JSON, default=dict)
     auth_config = Column(JSON, nullable=True)
+    scan_type = Column(String, default="Quick Scan")
+    profile_id = Column(String, nullable=True)
+    profile_name = Column(String, nullable=True)
+    program_id = Column(String, nullable=True)
+    program_name = Column(String, nullable=True)
+    effective_restrictions = Column(JSON, default=dict)
 
     current_module = Column(String, nullable=True)
     urls_discovered = Column(Integer, default=0)

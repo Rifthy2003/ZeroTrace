@@ -35,6 +35,9 @@ class ScanCreateRequest(BaseModel):
     authorization_confirmed: bool = False
     enable_browser_discovery: bool = True
     auth_config: Optional[dict] = None
+    scan_type: Optional[str] = "Quick Scan"
+    profile_id: Optional[str] = None
+    program_id: Optional[str] = None
 
     @field_validator("authorization_confirmed")
     @classmethod
@@ -96,6 +99,25 @@ class ScanResponse(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     duration_seconds: Optional[float] = None
+    scan_type: Optional[str] = "Quick Scan"
+    profile_id: Optional[str] = None
+    profile_name: Optional[str] = None
+    program_id: Optional[str] = None
+    program_name: Optional[str] = None
+    effective_restrictions: Optional[dict] = None
+
+    class Config:
+        from_attributes = True
+
+
+class FindingStatusHistoryResponse(BaseModel):
+    id: str
+    finding_id: str
+    old_status: Optional[str] = None
+    new_status: str
+    note: Optional[str] = None
+    user: str = "Security Researcher"
+    timestamp: datetime
 
     class Config:
         from_attributes = True
@@ -125,6 +147,7 @@ class FindingResponse(BaseModel):
     detection_status: Optional[str] = "Confirmed"
     raw_instances: Optional[int] = 1
     evidence_details: Optional[dict] = None
+    status_history: Optional[List[FindingStatusHistoryResponse]] = None
     timestamp: datetime
 
     class Config:
@@ -171,6 +194,12 @@ class CoverageResponse(BaseModel):
     max_urls: int
     modules: List[str]
     duration_seconds: Optional[float] = None
+    scan_type: Optional[str] = "Quick Scan"
+    profile_id: Optional[str] = None
+    profile_name: Optional[str] = None
+    program_id: Optional[str] = None
+    program_name: Optional[str] = None
+    effective_restrictions: Optional[dict] = None
     routes_discovered: List[str] = []
     routes_visited: List[str] = []
     routes_tested: List[str] = []
@@ -255,6 +284,12 @@ class HistoryPointResponse(BaseModel):
     created_at: datetime
     completed_at: Optional[datetime] = None
     duration_seconds: Optional[float] = None
+    scan_type: Optional[str] = "Quick Scan"
+    profile_id: Optional[str] = None
+    profile_name: Optional[str] = None
+    program_id: Optional[str] = None
+    program_name: Optional[str] = None
+    effective_restrictions: Optional[dict] = None
     status: str
     score: float
     rating: str
@@ -286,8 +321,194 @@ class ApplicationTrendResponse(BaseModel):
 
 
 class FindingStatusUpdateRequest(BaseModel):
-    status: str  # "open", "fixed", "accepted_risk", "reopened"
+    status: str
     note: Optional[str] = None
+    user: Optional[str] = "Security Researcher"
+
+
+class ScanProfileCreateRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    modules: List[str]
+    max_depth: Optional[int] = 2
+    max_urls: Optional[int] = 50
+    max_parameters: Optional[int] = 50
+    request_rate: Optional[float] = 5.0
+    concurrency: Optional[int] = 2
+    request_timeout: Optional[float] = 10.0
+    allowed_http_methods: Optional[List[str]] = ["GET", "POST"]
+    enable_browser_discovery: Optional[bool] = True
+    send_payloads: Optional[bool] = True
+    auth_config: Optional[dict] = None
+
+
+class ScanProfileUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    modules: Optional[List[str]] = None
+    max_depth: Optional[int] = None
+    max_urls: Optional[int] = None
+    max_parameters: Optional[int] = None
+    request_rate: Optional[float] = None
+    concurrency: Optional[int] = None
+    request_timeout: Optional[float] = None
+    allowed_http_methods: Optional[List[str]] = None
+    enable_browser_discovery: Optional[bool] = None
+    send_payloads: Optional[bool] = None
+    auth_config: Optional[dict] = None
+
+
+class ScanProfileResponse(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    is_builtin: bool = False
+    is_default: bool = False
+    modules: List[str]
+    max_depth: int
+    max_urls: int
+    max_parameters: int
+    request_rate: float
+    concurrency: int
+    request_timeout: float
+    allowed_http_methods: List[str]
+    enable_browser_discovery: bool
+    send_payloads: bool
+    auth_config: Optional[dict] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ScanProgramCreateRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    target_domains: List[str]
+    url_patterns: Optional[List[str]] = []
+    out_of_scope_paths: Optional[List[str]] = []
+    allowed_modules: Optional[List[str]] = []
+    prohibited_modules: Optional[List[str]] = []
+    max_requests_per_second: Optional[float] = None
+    max_concurrency: Optional[int] = None
+    max_depth: Optional[int] = None
+    max_urls: Optional[int] = None
+    allow_automated_scanning: Optional[bool] = True
+    auth_config: Optional[dict] = None
+    notes: Optional[str] = None
+
+
+class ScanProgramUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    target_domains: Optional[List[str]] = None
+    url_patterns: Optional[List[str]] = None
+    out_of_scope_paths: Optional[List[str]] = None
+    allowed_modules: Optional[List[str]] = None
+    prohibited_modules: Optional[List[str]] = None
+    max_requests_per_second: Optional[float] = None
+    max_concurrency: Optional[int] = None
+    max_depth: Optional[int] = None
+    max_urls: Optional[int] = None
+    allow_automated_scanning: Optional[bool] = None
+    auth_config: Optional[dict] = None
+    notes: Optional[str] = None
+
+
+class ScanProgramResponse(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    target_domains: List[str]
+    url_patterns: List[str]
+    out_of_scope_paths: List[str]
+    allowed_modules: List[str]
+    prohibited_modules: List[str]
+    max_requests_per_second: Optional[float] = None
+    max_concurrency: Optional[int] = None
+    max_depth: Optional[int] = None
+    max_urls: Optional[int] = None
+    allow_automated_scanning: bool
+    auth_config: Optional[dict] = None
+    notes: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ComparedFindingItem(BaseModel):
+    fingerprint: str
+    type: str
+    category: str
+    url: str
+    method: str
+    parameter: Optional[str] = None
+    severity: str
+    status: str
+    comparison_status: str  # "new", "fixed", "recurring", "unchanged"
+    base_finding_id: Optional[str] = None
+    target_finding_id: Optional[str] = None
+    affected_urls: List[str] = []
+    raw_instances: int = 1
+    evidence_snippet: Optional[str] = None
+
+
+class ScanComparisonResponse(BaseModel):
+    base_scan: ScanResponse
+    target_scan: ScanResponse
+    target_domain: str
+    base_score: float
+    target_score: float
+    score_delta: float
+    base_unique_count: int
+    target_unique_count: int
+    count_delta: int
+    severity_changes: dict
+    coverage_changes: dict
+    findings_summary: dict
+    compared_findings: List[ComparedFindingItem]
+
+
+class EndpointCoverageItem(BaseModel):
+    id: str
+    url: str
+    method: str
+    endpoint_type: str
+    source: str
+    status_code: Optional[int] = None
+    parameters: List[dict] = []
+    testing_status: str
+    is_tested: bool
+    modules_executed: List[str] = []
+    findings_count: int = 0
+    findings: List[dict] = []
+
+
+class EndpointCoverageResponse(BaseModel):
+    scan_id: str
+    target_url: str
+    hostname: str
+    scan_status: str
+    created_at: datetime
+    discovered_pages: int
+    discovered_endpoints: int
+    discovered_forms: int
+    discovered_parameters: int
+    tested_endpoints: int
+    untested_endpoints: int
+    tested_parameters: int
+    untested_parameters: int
+    successful_requests: int
+    failed_requests: int
+    skipped_endpoints: int
+    auth_protected_endpoints: int
+    coverage_percentage: float
+    method_distribution: dict
+    module_matrix: List[dict]
+    endpoints: List[EndpointCoverageItem]
 
 
 class ActivityResponse(BaseModel):

@@ -89,14 +89,14 @@ def test_remediation_status_update_and_activities(client, db):
         json={"status": "accepted_risk", "note": "Internal dashboard behind SSO"},
     )
     assert res_patch.status_code == 200
-    assert res_patch.json()["status"] == "accepted_risk"
+    assert res_patch.json()["status"] in ("accepted_risk", "Accepted Risk")
 
     # 2. Check remediation tracker endpoint
     res_rem = client.get(f"/api/findings/remediation-tracker?application_id={app.id}")
     assert res_rem.status_code == 200
     findings_list = res_rem.json()
     assert len(findings_list) >= 1
-    assert any(f["id"] == finding.id and f["status"] == "accepted_risk" for f in findings_list)
+    assert any(f["id"] == finding.id and f["status"] in ("accepted_risk", "Accepted Risk") for f in findings_list)
 
     # 3. Check activity timeline logged the change
     res_act = client.get(f"/api/activities?application_id={app.id}")

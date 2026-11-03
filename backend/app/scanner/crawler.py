@@ -20,6 +20,7 @@ from app.core.ssrf_protection import is_same_origin, validate_redirect_url, Unsa
 from app.scanner.http_client import SafeHTTPClient
 from app.scanner.models import DiscoveredEndpoint, DiscoveredParameter
 from app.scanner.browser_crawler import BrowserCrawler
+from app.scanner.scope_enforcer import validate_url_in_scope
 
 logger = logging.getLogger("scanner.crawler")
 
@@ -63,6 +64,7 @@ class Crawler:
         enable_browser_discovery: bool = True,
         transport: Any = None,
         auth_config: Optional[Dict[str, Any]] = None,
+        scope_config: Optional[Dict[str, Any]] = None,
     ):
         self.start_url = normalize_url(start_url)
         self.max_depth = max_depth
@@ -70,6 +72,7 @@ class Crawler:
         self.allow_external = allow_external
         self.enable_browser_discovery = enable_browser_discovery
         self.auth_config = auth_config or {}
+        self.scope_config = scope_config or {}
 
         client_headers = self.auth_config.get("headers") if isinstance(self.auth_config, dict) else None
         client_cookies = self.auth_config.get("cookies") if isinstance(self.auth_config, dict) else None
@@ -92,6 +95,17 @@ class Crawler:
             "parameters_discovered": 0,
         }
 
+    def _is_url_allowed(self, url: str) -> bool:
+        if not self.scope_config:
+            return True
+        allowed, _ = validate_url_in_scope(
+            url,
+            target_domains=self.scope_config.get("target_domains"),
+            url_patterns=self.scope_config.get("url_patterns"),
+            out_of_scope_paths=self.scope_config.get("out_of_scope_paths"),
+        )
+        return allowed
+
     async def crawl(self, on_endpoint_discovered=None) -> List[DiscoveredEndpoint]:
         # 1. Optional Playwright-based browser discovery for SPAs & client-side routes
         if self.enable_browser_discovery:
@@ -108,6 +122,8 @@ class Crawler:
 
                 for ep in spa_endpoints:
                     norm_ep_url = normalize_url(ep.url)
+                    if not self._is_url_allowed(norm_ep_url):
+                        continue
                     ep_key = f"{ep.method}:{norm_ep_url}"
                     if ep_key not in self.visited:
                         self.visited.add(ep_key)
@@ -124,6 +140,8 @@ class Crawler:
         while queue and len(self.endpoints) < self.max_urls:
             url, depth = queue.popleft()
             norm_url = normalize_url(url)
+            if not self._is_url_allowed(norm_url):
+                continue
             http_key = f"GET:{norm_url}"
 
             # Skip if we already performed full HTTP parse on this exact URL
@@ -158,7 +176,10 @@ class Crawler:
 
             # Register discovered form action endpoints (e.g. POST forms)
             for f_ep in form_endpoints:
-                f_key = f"{f_ep.method}:{normalize_url(f_ep.url)}"
+                norm_f_url = normalize_url(f_ep.url)
+                if not self._is_url_allowed(norm_f_url):
+                    continue
+                f_key = f"{f_ep.method}:{norm_f_url}"
                 if f_key not in self.visited and len(self.endpoints) < self.max_urls:
                     self.visited.add(f_key)
                     self.endpoints.append(f_ep)
@@ -169,6 +190,8 @@ class Crawler:
             if depth < self.max_depth:
                 for link in links:
                     norm_link = normalize_url(link)
+                    if not self._is_url_allowed(norm_link):
+                        continue
                     link_key = f"GET:{norm_link}"
                     if link_key not in self.http_visited:
                         queue.append((norm_link, depth + 1))

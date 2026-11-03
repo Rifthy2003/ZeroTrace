@@ -12,14 +12,12 @@ import {
   getFindings,
   getScan,
   getSecurityPosture,
-  reportUrl,
   summaryReportUrl,
-  fullReportUrl,
   shortReportUrl,
   bountyReportUrl,
 } from "../services/api";
 import { Card, SeverityBadge, LifecycleBadge, Spinner, Pagination } from "../components/ui";
-import { SEVERITIES, SEVERITY_COLORS, fmtDate } from "../utils/format";
+import { SEVERITIES, SEVERITY_COLORS, ALL_LIFECYCLE_STATUSES, fmtDate } from "../utils/format";
 
 export default function ScanResults() {
   const { id } = useParams();
@@ -240,9 +238,12 @@ export default function ScanResults() {
       <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-100">Scan Results</h1>
-          <p className="text-xs text-slate-400 mt-0.5">
-            Target: <span className="font-mono text-emerald-400">{scan.target_url || scan.target?.base_url || "Target"}</span>
-          </p>
+          <div className="text-xs text-slate-400 mt-0.5 flex flex-wrap items-center gap-2">
+            <span>Target: <span className="font-mono text-emerald-400">{scan.target_url || scan.target?.base_url || "Target"}</span></span>
+            <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-800 text-slate-300 border border-slate-700">
+              {scan.scan_type || scan.profile_name || "Quick Scan"}
+            </span>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <a
@@ -494,12 +495,14 @@ export default function ScanResults() {
               Breakdown of security test modules, discovery scope, tested endpoints, and forms.
             </p>
           </div>
-          <button
-            onClick={() => setShowCoverageSection(!showCoverageSection)}
-            className="text-xs text-slate-400 hover:text-slate-200 px-2 py-1 rounded bg-slate-800 border border-slate-700"
-          >
-            {showCoverageSection ? "Collapse ▲" : "Expand ▼"}
-          </button>
+          <div>
+            <button
+              onClick={() => setShowCoverageSection(!showCoverageSection)}
+              className="text-xs text-slate-400 hover:text-slate-200 px-2 py-1 rounded bg-slate-800 border border-slate-700"
+            >
+              {showCoverageSection ? "Collapse ▲" : "Expand ▼"}
+            </button>
+          </div>
         </div>
 
         {showCoverageSection && (
@@ -697,7 +700,7 @@ export default function ScanResults() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-2">
               <select
                 className={inputClass}
                 value={flt.severity}
@@ -726,6 +729,21 @@ export default function ScanResults() {
                 <option value="Confirmed">Confirmed</option>
                 <option value="Requires Manual Verification">Requires Manual Verification</option>
                 <option value="Potential">Potential</option>
+              </select>
+
+              <select
+                className={inputClass}
+                value={flt.status}
+                onChange={(e) => {
+                  setFlt({ ...flt, status: e.target.value });
+                  setActiveFilterLabel(e.target.value ? `Lifecycle: ${e.target.value}` : null);
+                  setPage(1);
+                }}
+              >
+                <option value="">All Lifecycle Statuses</option>
+                {ALL_LIFECYCLE_STATUSES.map((st) => (
+                  <option key={st} value={st}>{st}</option>
+                ))}
               </select>
 
               <select

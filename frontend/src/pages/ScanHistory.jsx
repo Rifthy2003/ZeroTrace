@@ -609,8 +609,13 @@ export default function ScanHistory() {
                           <div className="font-mono text-slate-400 text-xs truncate max-w-xs mt-0.5">
                             {s.target_url || s.hostname || "—"}
                           </div>
-                          <div className="font-mono text-[10px] text-slate-500 truncate max-w-xs">
-                            ID: {s.id.slice(0, 8)}...
+                          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                            <span className="font-mono text-[10px] text-slate-500 truncate">
+                              ID: {s.id.slice(0, 8)}...
+                            </span>
+                            <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-slate-800 text-slate-300 border border-slate-700/80">
+                              {s.scan_type || s.profile_name || "Quick Scan"}
+                            </span>
                           </div>
                         </td>
 

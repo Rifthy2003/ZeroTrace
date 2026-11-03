@@ -18,8 +18,9 @@ def get_db():
 
 
 def init_db():
+    import json
     # Import models so they're registered on Base before create_all
-    from app.models import scan, target, endpoint, parameter, finding, user, scan_summary, application, activity  # noqa
+    from app.models import scan, target, endpoint, parameter, finding, user, scan_summary, application, activity, profile  # noqa
     Base.metadata.create_all(bind=engine)
     from sqlalchemy import inspect, text
 
@@ -28,129 +29,96 @@ def init_db():
     is_pg = settings.DATABASE_URL.startswith("postgresql")
     timestamp_type = "TIMESTAMP WITHOUT TIME ZONE" if is_pg else "DATETIME"
     bool_true = "TRUE" if is_pg else "1"
+    bool_false = "FALSE" if is_pg else "0"
 
     def get_existing_cols(table_name):
         if table_name not in existing_tables:
             return set()
         return {col["name"] for col in inspector.get_columns(table_name)}
 
-    with engine.connect() as conn:
-        # scans table
-        scan_cols = get_existing_cols("scans")
-        if "enable_browser_discovery" not in scan_cols:
+    def run_alter(table_name, col_name, sql):
+        with engine.begin() as conn:
             try:
-                conn.execute(text(f"ALTER TABLE scans ADD COLUMN enable_browser_discovery BOOLEAN DEFAULT {bool_true}"))
-            except Exception:
-                pass
-        if "route_summary" not in scan_cols:
-            try:
-                conn.execute(text("ALTER TABLE scans ADD COLUMN route_summary JSON"))
-            except Exception:
-                pass
-        if "application_id" not in scan_cols:
-            try:
-                conn.execute(text("ALTER TABLE scans ADD COLUMN application_id VARCHAR"))
-            except Exception:
-                pass
-        if "coverage_summary" not in scan_cols:
-            try:
-                conn.execute(text("ALTER TABLE scans ADD COLUMN coverage_summary JSON"))
-            except Exception:
-                pass
-        if "auth_config" not in scan_cols:
-            try:
-                conn.execute(text("ALTER TABLE scans ADD COLUMN auth_config JSON"))
-            except Exception:
-                pass
-        if "name" not in scan_cols:
-            try:
-                conn.execute(text("ALTER TABLE scans ADD COLUMN name VARCHAR"))
-            except Exception:
-                pass
-        bool_false = "FALSE" if is_pg else "0"
-        if "is_deleted" not in scan_cols:
-            try:
-                conn.execute(text(f"ALTER TABLE scans ADD COLUMN is_deleted BOOLEAN DEFAULT {bool_false}"))
-            except Exception:
-                pass
-        if "deleted_at" not in scan_cols:
-            try:
-                conn.execute(text(f"ALTER TABLE scans ADD COLUMN deleted_at {timestamp_type}"))
+                conn.execute(text(sql))
             except Exception:
                 pass
 
-        # targets table
-        target_cols = get_existing_cols("targets")
-        if "application_id" not in target_cols:
-            try:
-                conn.execute(text("ALTER TABLE targets ADD COLUMN application_id VARCHAR"))
-            except Exception:
-                pass
-        if "name" not in target_cols:
-            try:
-                conn.execute(text("ALTER TABLE targets ADD COLUMN name VARCHAR"))
-            except Exception:
-                pass
+    # scans table
+    scan_cols = get_existing_cols("scans")
+    for col, col_def in [
+        ("enable_browser_discovery", f"BOOLEAN DEFAULT {bool_true}"),
+        ("route_summary", "JSON"),
+        ("application_id", "VARCHAR"),
+        ("coverage_summary", "JSON"),
+        ("auth_config", "JSON"),
+        ("name", "VARCHAR"),
+        ("is_deleted", f"BOOLEAN DEFAULT {bool_false}"),
+        ("deleted_at", timestamp_type),
+        ("profile_id", "VARCHAR"),
+        ("profile_name", "VARCHAR"),
+        ("scan_type", "VARCHAR DEFAULT 'Quick Scan'"),
+        ("program_id", "VARCHAR"),
+        ("program_name", "VARCHAR"),
+        ("effective_restrictions", "JSON"),
+    ]:
+        if col not in scan_cols:
+            run_alter("scans", col, f"ALTER TABLE scans ADD COLUMN {col} {col_def}")
 
-        # findings table
-        finding_cols = get_existing_cols("findings")
-        if "status" not in finding_cols:
-            try:
-                conn.execute(text("ALTER TABLE findings ADD COLUMN status VARCHAR DEFAULT 'open'"))
-            except Exception:
-                pass
-        if "fingerprint" not in finding_cols:
-            try:
-                conn.execute(text("ALTER TABLE findings ADD COLUMN fingerprint VARCHAR"))
-            except Exception:
-                pass
-        if "status_note" not in finding_cols:
-            try:
-                conn.execute(text("ALTER TABLE findings ADD COLUMN status_note TEXT"))
-            except Exception:
-                pass
-        if "status_updated_at" not in finding_cols:
-            try:
-                conn.execute(text(f"ALTER TABLE findings ADD COLUMN status_updated_at {timestamp_type}"))
-            except Exception:
-                pass
-        if "cwe_id" not in finding_cols:
-            try:
-                conn.execute(text("ALTER TABLE findings ADD COLUMN cwe_id VARCHAR"))
-            except Exception:
-                pass
-        if "mitre_attack" not in finding_cols:
-            try:
-                conn.execute(text("ALTER TABLE findings ADD COLUMN mitre_attack VARCHAR"))
-            except Exception:
-                pass
-        if "detection_status" not in finding_cols:
-            try:
-                conn.execute(text("ALTER TABLE findings ADD COLUMN detection_status VARCHAR DEFAULT 'Confirmed'"))
-            except Exception:
-                pass
-        if "raw_instances" not in finding_cols:
-            try:
-                conn.execute(text("ALTER TABLE findings ADD COLUMN raw_instances INTEGER DEFAULT 1"))
-            except Exception:
-                pass
-        if "evidence_details" not in finding_cols:
-            try:
-                conn.execute(text("ALTER TABLE findings ADD COLUMN evidence_details JSON"))
-            except Exception:
-                pass
+    # endpoints table
+    endpoint_cols = get_existing_cols("endpoints")
+    for col, col_def in [
+        ("source", "VARCHAR DEFAULT 'crawler'"),
+        ("endpoint_type", "VARCHAR DEFAULT 'page'"),
+        ("is_tested", f"BOOLEAN DEFAULT {bool_false}"),
+        ("testing_status", "VARCHAR DEFAULT 'untested'"),
+        ("modules_executed", "JSON"),
+    ]:
+        if col not in endpoint_cols:
+            run_alter("endpoints", col, f"ALTER TABLE endpoints ADD COLUMN {col} {col_def}")
 
+    # targets table
+    target_cols = get_existing_cols("targets")
+    for col, col_def in [
+        ("application_id", "VARCHAR"),
+        ("name", "VARCHAR"),
+    ]:
+        if col not in target_cols:
+            run_alter("targets", col, f"ALTER TABLE targets ADD COLUMN {col} {col_def}")
+
+    # findings table
+    finding_cols = get_existing_cols("findings")
+    for col, col_def in [
+        ("status", "VARCHAR DEFAULT 'open'"),
+        ("fingerprint", "VARCHAR"),
+        ("status_note", "TEXT"),
+        ("status_updated_at", timestamp_type),
+        ("cwe_id", "VARCHAR"),
+        ("mitre_attack", "VARCHAR"),
+        ("detection_status", "VARCHAR DEFAULT 'Confirmed'"),
+        ("raw_instances", "INTEGER DEFAULT 1"),
+        ("evidence_details", "JSON"),
+    ]:
+        if col not in finding_cols:
+            run_alter("findings", col, f"ALTER TABLE findings ADD COLUMN {col} {col_def}")
+
+    with engine.begin() as conn:
         # Data backfill for historical Missing Security Header findings
         header_backfill = [
-            ("content-security-policy", "Medium"),
-            ("x-frame-options", "Medium"),
-            ("strict-transport-security", "Low"),
-            ("x-content-type-options", "Low"),
-            ("referrer-policy", "Low"),
-            ("permissions-policy", "Informational"),
+            ("content-security-policy", "MEDIUM"),
+            ("x-frame-options", "MEDIUM"),
+            ("strict-transport-security", "LOW"),
+            ("x-content-type-options", "LOW"),
+            ("referrer-policy", "LOW"),
+            ("permissions-policy", "INFORMATIONAL"),
         ]
         for h_name, h_sev in header_backfill:
             try:
+                # Fix any legacy casing
+                if is_pg:
+                    conn.execute(text(
+                        f"UPDATE findings SET severity = '{h_sev}' "
+                        f"WHERE LOWER(severity::text) = LOWER('{h_sev}')"
+                    ))
                 # Populate parameter from evidence if missing
                 conn.execute(text(
                     f"UPDATE findings SET parameter = '{h_name}', severity = '{h_sev}' "
@@ -165,4 +133,111 @@ def init_db():
             except Exception:
                 pass
 
-        conn.commit()
+        try:
+            conn.execute(text("UPDATE scans SET scan_type = 'Full Scan' WHERE LOWER(profile_name) LIKE '%full%' AND (scan_type IS NULL OR scan_type = 'Quick Scan')"))
+            conn.execute(text("UPDATE scans SET scan_type = 'Quick Scan' WHERE scan_type IS NULL"))
+        except Exception:
+            pass
+
+        # Seed built-in scan profiles
+    # Seed built-in scan profiles via ORM
+    with SessionLocal() as db_session:
+        from app.models.profile import ScanProfile
+        builtin_profiles = [
+            {
+                "id": "profile-builtin-quick",
+                "name": "Quick Scan",
+                "description": "Rapid low-impact assessment with limited depth and essential security checks.",
+                "is_builtin": True,
+                "is_default": False,
+                "modules": ["security_headers", "cookie_security", "sensitive_files", "directory_listing", "information_disclosure"],
+                "max_depth": 1,
+                "max_urls": 10,
+                "max_parameters": 20,
+                "request_rate": 5.0,
+                "concurrency": 2,
+                "request_timeout": 8.0,
+                "allowed_http_methods": ["GET", "POST"],
+                "enable_browser_discovery": True,
+                "send_payloads": True,
+            },
+            {
+                "id": "profile-builtin-full",
+                "name": "Full Scan",
+                "description": "Comprehensive crawling and exhaustive vulnerability testing across all supported modules.",
+                "is_builtin": True,
+                "is_default": True,
+                "modules": ["security_headers", "cookie_security", "directory_listing", "sensitive_files", "information_disclosure", "csrf", "xss", "sql_injection", "open_redirect", "command_injection", "ssti", "path_traversal", "cors", "clickjacking", "auth_security", "graphql"],
+                "max_depth": 3,
+                "max_urls": 50,
+                "max_parameters": 50,
+                "request_rate": 10.0,
+                "concurrency": 4,
+                "request_timeout": 10.0,
+                "allowed_http_methods": ["GET", "POST", "PUT", "DELETE", "PATCH"],
+                "enable_browser_discovery": True,
+                "send_payloads": True,
+            },
+            {
+                "id": "profile-builtin-passive",
+                "name": "Passive Scan",
+                "description": "Analyze observed HTTP responses, headers, cookies, and configuration without sending attack payloads.",
+                "is_builtin": True,
+                "is_default": False,
+                "modules": ["security_headers", "cookie_security", "information_disclosure", "directory_listing"],
+                "max_depth": 2,
+                "max_urls": 30,
+                "max_parameters": 30,
+                "request_rate": 5.0,
+                "concurrency": 2,
+                "request_timeout": 8.0,
+                "allowed_http_methods": ["GET"],
+                "enable_browser_discovery": True,
+                "send_payloads": False,
+            },
+            {
+                "id": "profile-builtin-custom",
+                "name": "Custom Scan",
+                "description": "Tailor scanning depth, concurrency, rate limits, and select specific modules to test.",
+                "is_builtin": True,
+                "is_default": False,
+                "modules": ["security_headers", "cookie_security", "sensitive_files", "xss", "sql_injection", "csrf"],
+                "max_depth": 2,
+                "max_urls": 25,
+                "max_parameters": 25,
+                "request_rate": 5.0,
+                "concurrency": 2,
+                "request_timeout": 10.0,
+                "allowed_http_methods": ["GET", "POST"],
+                "enable_browser_discovery": True,
+                "send_payloads": True,
+            },
+        ]
+        for p in builtin_profiles:
+            try:
+                exists = db_session.query(ScanProfile).filter(ScanProfile.name == p["name"]).first()
+                if not exists:
+                    prof_obj = ScanProfile(
+                        id=p["id"],
+                        name=p["name"],
+                        description=p["description"],
+                        is_builtin=p["is_builtin"],
+                        is_default=p["is_default"],
+                        modules=p["modules"],
+                        max_depth=p["max_depth"],
+                        max_urls=p["max_urls"],
+                        max_parameters=p["max_parameters"],
+                        request_rate=p["request_rate"],
+                        concurrency=p["concurrency"],
+                        request_timeout=p["request_timeout"],
+                        allowed_http_methods=p["allowed_http_methods"],
+                        enable_browser_discovery=p["enable_browser_discovery"],
+                        send_payloads=p["send_payloads"],
+                    )
+                    db_session.add(prof_obj)
+            except Exception:
+                pass
+        try:
+            db_session.commit()
+        except Exception:
+            db_session.rollback()

@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from app.core.config import settings
 from app.database.session import SessionLocal
 from app.models.scan import Scan, ScanStatus
+from app.models.profile import ScanProfile, ScanProgram
 from app.models.endpoint import Endpoint
 from app.models.parameter import Parameter
 from app.models.finding import Finding, Severity, Confidence
@@ -132,13 +133,26 @@ async def run_scan(scan_id: str) -> None:
             metadata={"target_url": target_base},
         )
 
+        profile = db.get(ScanProfile, scan.profile_id) if getattr(scan, "profile_id", None) else None
+        program = db.get(ScanProgram, scan.program_id) if getattr(scan, "program_id", None) else None
+
+        scope_config = None
+        if program:
+            scope_config = {
+                "target_domains": program.target_domains or [],
+                "url_patterns": program.url_patterns or [],
+                "out_of_scope_paths": program.out_of_scope_paths or [],
+            }
+
         modules = set(scan.modules or ALL_KNOWN_MODULES)
         depth = min(scan.max_depth, settings.MAX_CRAWL_DEPTH_LIMIT)
         max_urls = min(scan.max_urls, settings.MAX_URLS_LIMIT)
         delay = max(scan.request_delay, 0.0)
 
-        # Execution Audit Log
+        # Execution Audit Log & Endpoint tracking
         execution_logs: List[Dict[str, Any]] = []
+        ep_rows_map: Dict[str, str] = {}
+        ep_modules_executed: Dict[str, List[str]] = {}
 
         # ---- Crawl ---------------------------------------------------------
         scan.current_module = "crawler"
@@ -147,6 +161,13 @@ async def run_scan(scan_id: str) -> None:
         async def on_endpoint(ep):
             scan.urls_discovered = (scan.urls_discovered or 0) + 1
             scan.parameters_found = (scan.parameters_found or 0) + len(ep.parameters)
+            ep_key = f"{ep.method}:{ep.url}"
+            if ep_key in ep_rows_map:
+                return
+
+            source_val = getattr(ep, "source", None) or ("browser" if getattr(ep, "is_spa", False) else "crawler")
+            ep_type = "form" if str(ep.has_form).lower() == "true" else ("api" if ("application/json" in (ep.content_type or "") or "/api/" in ep.url) else "page")
+
             row = Endpoint(
                 scan_id=scan_id,
                 url=ep.url,
@@ -156,9 +177,17 @@ async def run_scan(scan_id: str) -> None:
                 redirected_to=ep.redirected_to,
                 response_headers=ep.response_headers,
                 has_form=str(ep.has_form).lower(),
+                source=source_val,
+                endpoint_type=ep_type,
+                is_tested=False,
+                testing_status="untested",
+                modules_executed=[],
             )
             db.add(row)
             db.flush()
+            ep_rows_map[ep_key] = row.id
+            ep_modules_executed[ep_key] = []
+
             for p in ep.parameters:
                 db.add(Parameter(endpoint_id=row.id, name=p.name, location=p.location, sample_value=p.sample_value))
                 execution_logs.append({
@@ -200,6 +229,7 @@ async def run_scan(scan_id: str) -> None:
             delay,
             enable_browser_discovery=getattr(scan, "enable_browser_discovery", True),
             auth_config=auth_cfg,
+            scope_config=scope_config,
         )
         endpoints = await crawler.crawl(on_endpoint_discovered=on_endpoint)
         scan.route_summary = crawler.route_metrics
@@ -275,6 +305,17 @@ async def run_scan(scan_id: str) -> None:
 
                 # Check if module requires input parameters
                 if module in INPUT_DEPENDENT_MODULES:
+                    if profile and not getattr(profile, "send_payloads", True):
+                        execution_logs.append({
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "event": "module_skipped",
+                            "module": module,
+                            "url": ep.url,
+                            "reason": "Passive Scan profile prohibits sending attack payloads",
+                        })
+                        step += 1
+                        continue
+
                     if is_auth_required:
                         execution_logs.append({
                             "timestamp": datetime.utcnow().isoformat(),
@@ -300,6 +341,9 @@ async def run_scan(scan_id: str) -> None:
                     # Execute input module
                     module_tested_endpoints[module] += 1
                     module_parameters_tested[module] += len(testable_params)
+                    ep_k = f"{ep.method}:{ep.url}"
+                    if ep_k in ep_modules_executed and module not in ep_modules_executed[ep_k]:
+                        ep_modules_executed[ep_k].append(module)
                     for p in testable_params:
                         param_key = f"{ep.method}:{ep.url}:{p.name}:{p.location}"
                         tested_param_keys.add(param_key)
@@ -332,6 +376,9 @@ async def run_scan(scan_id: str) -> None:
                 else:
                     # Non-input dependent endpoint modules
                     module_tested_endpoints[module] += 1
+                    ep_k = f"{ep.method}:{ep.url}"
+                    if ep_k in ep_modules_executed and module not in ep_modules_executed[ep_k]:
+                        ep_modules_executed[ep_k].append(module)
 
                     if module == "security_headers":
                         found = security_headers.scan(ep)
@@ -419,6 +466,23 @@ async def run_scan(scan_id: str) -> None:
                 })
 
         await client.close()
+
+        # Update persisted Endpoint records with execution status and executed modules
+        for ep_key, row_id in ep_rows_map.items():
+            ep_row = db.get(Endpoint, row_id)
+            if ep_row:
+                executed = ep_modules_executed.get(ep_key, [])
+                ep_row.modules_executed = executed
+                ep_row.is_tested = len(executed) > 0
+                if ep_row.status_code in (401, 403):
+                    ep_row.testing_status = "auth_required"
+                elif ep_row.status_code and ep_row.status_code >= 500:
+                    ep_row.testing_status = "failed"
+                elif ep_row.is_tested:
+                    ep_row.testing_status = "tested"
+                else:
+                    ep_row.testing_status = "skipped"
+        db.commit()
 
         # ---- Build Accurate Coverage Matrix ---------------------------------
         total_unique_params_tested = len(tested_param_keys)

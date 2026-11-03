@@ -2,11 +2,13 @@ import React, { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import {
   getFindings,
+  getFinding,
   updateFindingStatus,
+  getFindingHistory,
   bountyReportUrl,
 } from "../services/api";
 import { Card, SeverityBadge, LifecycleBadge, Spinner } from "../components/ui";
-import { fmtDate } from "../utils/format";
+import { ALL_LIFECYCLE_STATUSES, fmtDate } from "../utils/format";
 
 const Row = ({ label, children }) => (
   <div className="mb-3">
@@ -18,33 +20,72 @@ const Row = ({ label, children }) => (
 export default function FindingDetails() {
   const { id, fid } = useParams();
   const [f, setF] = useState(null);
-  const [status, setStatus] = useState("open");
+  const [status, setStatus] = useState("New");
   const [note, setNote] = useState("");
+  const [user, setUser] = useState("Security Researcher");
+  const [history, setHistory] = useState([]);
   const [isUpdating, setIsUpdating] = useState(false);
-  const [msg, setMsg] = useState("");
+  const [msg, setMsg] = useState({ text: "", type: "" });
 
-  useEffect(() => {
-    getFindings(id).then((all) => {
+  const loadFindingData = async () => {
+    try {
+      const findingData = await getFinding(fid);
+      if (findingData) {
+        setF(findingData);
+        setStatus(findingData.status || "New");
+        setNote(findingData.status_note || "");
+        if (findingData.status_history) {
+          setHistory(findingData.status_history);
+        }
+      }
+    } catch {
+      // Fallback to finding from scan
+      const all = await getFindings(id);
       const match = all.find((x) => x.id === fid);
       if (match) {
         setF(match);
-        setStatus(match.status || "open");
+        setStatus(match.status || "New");
         setNote(match.status_note || "");
       }
-    });
+    }
+
+    try {
+      const hist = await getFindingHistory(fid);
+      if (hist && Array.isArray(hist)) {
+        setHistory(hist);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  useEffect(() => {
+    loadFindingData();
   }, [id, fid]);
 
-  const handleUpdateStatus = async () => {
+  const handleUpdateStatus = async (e) => {
+    e?.preventDefault();
     setIsUpdating(true);
-    setMsg("");
+    setMsg({ text: "", type: "" });
     try {
-      const updated = await updateFindingStatus(fid, { status, note });
-      setF((prev) => ({ ...prev, status: updated.status, status_note: updated.status_note }));
-      setMsg("Status successfully updated!");
-      setTimeout(() => setMsg(""), 3000);
+      const updated = await updateFindingStatus(fid, {
+        status,
+        note: note.trim() || undefined,
+        user: user.trim() || "Security Researcher",
+      });
+      setF((prev) => ({
+        ...prev,
+        status: updated.status,
+        status_note: updated.status_note,
+        status_updated_at: updated.status_updated_at,
+      }));
+      setMsg({ text: `Lifecycle status successfully updated to "${updated.status}"!`, type: "success" });
+      const hist = await getFindingHistory(fid);
+      if (hist) setHistory(hist);
+      setTimeout(() => setMsg({ text: "", type: "" }), 4000);
     } catch (err) {
       console.error(err);
-      setMsg("Failed to update status.");
+      setMsg({ text: err.response?.data?.detail || "Failed to update lifecycle status.", type: "error" });
     } finally {
       setIsUpdating(false);
     }
@@ -55,7 +96,8 @@ export default function FindingDetails() {
   const occurrences = f.evidence_details?.occurrences || [];
 
   return (
-    <div className="max-w-4xl space-y-4">
+    <div className="max-w-4xl space-y-5">
+      {/* Navigation and Top Actions */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <Link to={`/scan/${id}`} className="text-sm text-emerald-400 hover:text-emerald-300 inline-flex items-center gap-1">
           &larr; Back to scan results
@@ -75,6 +117,8 @@ export default function FindingDetails() {
           </a>
         </div>
       </div>
+
+      {/* Title & Metadata Badges */}
       <div>
         <h1 className="text-2xl font-bold text-slate-100">{f.type}</h1>
         <div className="flex flex-wrap gap-2.5 items-center mt-2.5">
@@ -82,17 +126,28 @@ export default function FindingDetails() {
           <span className="text-xs px-2.5 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
             Confidence: {f.confidence}
           </span>
-          <span
-            className={`text-xs px-2.5 py-0.5 rounded font-semibold border ${f.detection_status === "Confirmed"
-                ? "bg-emerald-950/60 text-emerald-400 border-emerald-800/80"
-                : f.detection_status === "Requires Manual Verification"
-                  ? "bg-amber-950/60 text-amber-400 border-amber-800/80"
-                  : "bg-blue-950/60 text-blue-400 border-blue-800/80"
+
+          {/* Explicit separation between Scanner Detection Status and Researcher Lifecycle Status */}
+          <div className="flex items-center gap-1.5 text-xs bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+            <span className="text-slate-400">Scanner:</span>
+            <span
+              className={`font-semibold ${
+                f.detection_status === "Confirmed"
+                  ? "text-emerald-400"
+                  : f.detection_status === "Requires Manual Verification"
+                  ? "text-amber-400"
+                  : "text-blue-400"
               }`}
-          >
-            {f.detection_status || "Confirmed"}
-          </span>
-          <LifecycleBadge status={f.status} />
+            >
+              {f.detection_status || "Confirmed"}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-1.5 text-xs bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+            <span className="text-slate-400">Lifecycle:</span>
+            <LifecycleBadge status={f.status || "New"} />
+          </div>
+
           {f.cwe_id && (
             <span className="text-xs font-mono px-2 py-0.5 rounded bg-indigo-950/60 text-indigo-300 border border-indigo-800/60">
               {f.cwe_id}
@@ -105,56 +160,124 @@ export default function FindingDetails() {
           )}
           {f.fingerprint && (
             <span className="text-xs font-mono text-slate-400 bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700">
-              FP: {f.fingerprint}
+              FP: {f.fingerprint.slice(0, 16)}...
             </span>
           )}
         </div>
       </div>
 
-      {/* Lifecycle Status Management Card */}
-      <Card title="Remediation Lifecycle Status">
-        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
-          <div className="flex-1 w-full sm:w-auto">
-            <label className="text-xs text-slate-400 block mb-1">Update Status</label>
-            <select
-              value={status}
-              onChange={(e) => setStatus(e.target.value)}
-              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 w-full"
-            >
-              <option value="open">Open (Vulnerability Active)</option>
-              <option value="fixed">Fixed (Remediation Implemented)</option>
-              <option value="accepted_risk">Accepted Risk (Business Justification)</option>
-              <option value="reopened">Reopened (Issue Recurred)</option>
-            </select>
+      {/* Feature 2: Researcher Lifecycle Management Panel */}
+      <Card title="Researcher Lifecycle Management">
+        <div className="text-xs text-slate-400 mb-4">
+          Manage the vulnerability lifecycle independently from automated scanner findings. Transitions are logged to the audit history timeline below.
+        </div>
+
+        <form onSubmit={handleUpdateStatus} className="space-y-3 bg-slate-950/60 p-4 rounded-lg border border-slate-800">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-slate-300 font-medium block mb-1">
+                Lifecycle Status <span className="text-rose-400">*</span>
+              </label>
+              <select
+                value={status}
+                onChange={(e) => setStatus(e.target.value)}
+                className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 w-full"
+              >
+                {ALL_LIFECYCLE_STATUSES.map((st) => (
+                  <option key={st} value={st}>
+                    {st}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs text-slate-300 font-medium block mb-1">
+                Researcher / Reviewer Attribution
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. Lead AppSec / Alex Rivera"
+                value={user}
+                onChange={(e) => setUser(e.target.value)}
+                className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500 w-full"
+              />
+            </div>
           </div>
-          <div className="flex-[2] w-full sm:w-auto">
-            <label className="text-xs text-slate-400 block mb-1">Remediation Note / Justification</label>
-            <input
-              type="text"
-              placeholder="e.g. Added input sanitizer; verified in staging"
+
+          <div>
+            <label className="text-xs text-slate-300 font-medium block mb-1">
+              Verification Note / Business Justification
+            </label>
+            <textarea
+              rows={2}
+              placeholder="e.g. Re-tested with crafted payload; issue resolved in commit c4f89b or requires staging verification."
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500 w-full"
+              className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500 w-full"
             />
           </div>
-          <div className="sm:self-end">
+
+          <div className="flex items-center justify-between pt-1">
+            <div className="text-xs">
+              {msg.text && (
+                <span className={msg.type === "success" ? "text-emerald-400 font-medium" : "text-rose-400 font-medium"}>
+                  {msg.type === "success" ? "✓ " : "⚠ "}
+                  {msg.text}
+                </span>
+              )}
+            </div>
             <button
-              onClick={handleUpdateStatus}
+              type="submit"
               disabled={isUpdating}
-              className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold disabled:opacity-50 transition-colors"
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold disabled:opacity-50 transition-colors shadow"
             >
-              {isUpdating ? "Saving…" : "Save Status"}
+              {isUpdating ? "Updating..." : "Update Lifecycle Status"}
             </button>
           </div>
+        </form>
+
+        {/* Timestamped Audit History Timeline */}
+        <div className="mt-5 pt-4 border-t border-slate-800">
+          <h4 className="text-xs font-semibold uppercase text-slate-400 tracking-wider mb-3 flex items-center gap-1.5">
+            <span>⏱</span> Status Audit History & Review Timeline ({history.length})
+          </h4>
+
+          {history.length === 0 ? (
+            <div className="text-xs text-slate-500 italic p-3 bg-slate-950/40 rounded border border-slate-800/60">
+              No manual status transitions recorded yet. Initial lifecycle status is "{f.status || "New"}".
+            </div>
+          ) : (
+            <div className="relative pl-6 border-l-2 border-slate-800 space-y-4">
+              {history.map((h, idx) => (
+                <div key={idx} className="relative group">
+                  {/* Dot */}
+                  <div className="absolute -left-[31px] top-1.5 w-3 h-3 rounded-full bg-emerald-500 border-2 border-slate-900" />
+                  <div className="bg-slate-950/60 rounded-lg p-3 border border-slate-800">
+                    <div className="flex flex-wrap items-center justify-between gap-1 text-xs mb-1">
+                      <div className="flex items-center gap-1.5 font-medium">
+                        <span className="text-slate-400">{h.old_status || "Initial"}</span>
+                        <span className="text-slate-600">&rarr;</span>
+                        <LifecycleBadge status={h.new_status} />
+                      </div>
+                      <span className="text-slate-500 text-[11px] font-mono">{fmtDate(h.timestamp)}</span>
+                    </div>
+                    <div className="text-xs text-slate-400 mt-1">
+                      <span className="font-semibold text-slate-300">{h.user || "Security Researcher"}</span>
+                      {h.note && (
+                        <p className="mt-1 text-slate-200 bg-slate-900/80 p-2 rounded border border-slate-800/80 font-sans italic text-xs">
+                          "{h.note}"
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
-        {msg && (
-          <div className="text-xs text-emerald-400 font-medium mt-2">
-            ✓ {msg}
-          </div>
-        )}
       </Card>
 
-      {/* Technical Details Card */}
+      {/* Technical Vulnerability Details Card */}
       <Card title="Technical Vulnerability Details">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pb-3 mb-3 border-b border-slate-800">
           <Row label="Affected URL">
