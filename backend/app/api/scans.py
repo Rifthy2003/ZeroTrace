@@ -820,6 +820,28 @@ def get_scan_coverage(scan_id: str, db: Session = Depends(get_db)):
         method_dist[m] = method_dist.get(m, 0) + 1
 
     module_matrix = cov_sum.get("module_matrix", [])
+    if module_matrix:
+        from app.services.security_posture import _matches_module_finding
+        input_reflections = [
+            f for f in findings
+            if (getattr(f, "type", "") or "") == "Input Reflection"
+            or (str(getattr(f, "severity", "")).lower() in ("informational", "severity.informational") and "reflection" in (getattr(f, "type", "") or "").lower())
+        ]
+        synced_matrix = []
+        for row in module_matrix:
+            r = dict(row)
+            mod = r.get("module")
+            if mod == "xss":
+                confirmed_xss = [f for f in findings if _matches_module_finding(f, "xss")]
+                r["findings_count"] = len(confirmed_xss)
+                if len(confirmed_xss) == 0 and len(input_reflections) > 0:
+                    pts = r.get("parameters_tested", tested_params)
+                    ets = r.get("endpoints_tested", tested_endpoints)
+                    r["reason"] = f"Tested {pts} parameter(s) across {ets} endpoint(s) ({len(input_reflections)} safe input reflection(s) observed with proper encoding; no confirmed XSS)"
+            elif mod:
+                r["findings_count"] = len([f for f in findings if _matches_module_finding(f, mod)])
+            synced_matrix.append(r)
+        module_matrix = synced_matrix
 
     endpoint_items: list[EndpointCoverageItem] = []
     for e in endpoints:

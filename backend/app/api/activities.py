@@ -192,7 +192,11 @@ def list_remediation_findings(
     limit: int = 100,
     db: Session = Depends(get_db),
 ):
-    q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
+    q = (
+        db.query(Finding)
+        .join(Scan, Finding.scan_id == Scan.id)
+        .filter((Scan.is_deleted == False) | (Scan.is_deleted.is_(None)))
+    )
     if application_id:
         q = q.filter(Scan.application_id == application_id)
     if status:

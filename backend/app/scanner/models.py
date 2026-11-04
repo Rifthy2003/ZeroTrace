@@ -48,3 +48,4 @@ class ScanFinding:
     finding_group: Optional[str] = None
     raw_instances: int = 1
     evidence_details: Dict[str, Any] = field(default_factory=dict)
+    module: Optional[str] = None

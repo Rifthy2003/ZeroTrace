@@ -84,6 +84,11 @@ CWE_MITRE_MAP: Dict[str, Tuple[str, str]] = {
     "Weak Content Security Policy": ("CWE-693", "T1562"),
     "SQL Injection": ("CWE-89", "T1190"),
     "Cross-Site Scripting (XSS)": ("CWE-79", "T1189"),
+    "Cross-Site Scripting (Reflected)": ("CWE-79", "T1189"),
+    "Cross-Site Scripting (DOM)": ("CWE-79", "T1189"),
+    "Reflected XSS": ("CWE-79", "T1189"),
+    "DOM XSS": ("CWE-79", "T1189"),
+    "Input Reflection": ("CWE-79", "T1059.007"),
     "Cross-Site Request Forgery (CSRF)": ("CWE-352", "T1189"),
     "Open Redirect": ("CWE-601", "T1566"),
     "Command Injection": ("CWE-78", "T1059"),
@@ -264,6 +269,8 @@ def correlate(findings: List[ScanFinding]) -> List[ScanFinding]:
         else:
             rep = groups[key]
             rep.raw_instances += 1
+            if not getattr(rep, "module", None) and getattr(f, "module", None):
+                rep.module = f.module
             occurrences[key].append(occurrence_item)
             if f.url and f.url not in affected_urls[key]:
                 affected_urls[key].append(f.url)

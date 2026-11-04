@@ -118,6 +118,8 @@ async def run_scan(scan_id: str) -> None:
     try:
         scan.status = ScanStatus.RUNNING
         scan.started_at = datetime.utcnow()
+        scan.progress_percent = 1.0
+        scan.current_module = "initializing"
         db.commit()
         logger.info("Scan started scan_id=%s", scan_id)
 
@@ -156,11 +158,14 @@ async def run_scan(scan_id: str) -> None:
 
         # ---- Crawl ---------------------------------------------------------
         scan.current_module = "crawler"
+        scan.progress_percent = 2.0
         db.commit()
 
         async def on_endpoint(ep):
             scan.urls_discovered = (scan.urls_discovered or 0) + 1
             scan.parameters_found = (scan.parameters_found or 0) + len(ep.parameters)
+            crawl_pct = 2.0 + min(23.0, (scan.urls_discovered / max(1, max_urls)) * 23.0)
+            scan.progress_percent = round(crawl_pct, 1)
             ep_key = f"{ep.method}:{ep.url}"
             if ep_key in ep_rows_map:
                 return
@@ -233,11 +238,15 @@ async def run_scan(scan_id: str) -> None:
         )
         endpoints = await crawler.crawl(on_endpoint_discovered=on_endpoint)
         scan.route_summary = crawler.route_metrics
+        scan.current_module = "analyzing_endpoints"
+        scan.progress_percent = 26.0
         db.commit()
 
         forms_cnt = crawler.route_metrics.get("forms_discovered", 0)
         params_discovered_cnt = sum(len(e.parameters) for e in endpoints)
         scan.parameters_found = params_discovered_cnt
+        scan.progress_percent = 28.0
+        db.commit()
 
         logger.info(
             "Crawl finished endpoints=%d routes_discovered=%d forms_discovered=%d parameters_discovered=%d",
@@ -285,6 +294,10 @@ async def run_scan(scan_id: str) -> None:
             + (1 if "graphql" in modules else 0),
         )
         step = 0
+
+        scan.current_module = "vulnerability_checks"
+        scan.progress_percent = 30.0
+        db.commit()
 
         # ---- Run Per-Endpoint Modules ---------------------------------------
         for ep in endpoints:
@@ -409,13 +422,17 @@ async def run_scan(scan_id: str) -> None:
                     })
 
                 if found:
-                    module_findings_count[module] += len(found)
+                    for f in found:
+                        if not getattr(f, "module", None):
+                            f.module = module
                     logger.warning("Finding detected module=%s url=%s count=%d", module, ep.url, len(found))
                     all_findings.extend(found)
 
                 step += 1
-                scan.progress_percent = round(100 * step / total_steps, 1)
+                test_progress = 30.0 + (step / total_steps) * 62.0
+                scan.progress_percent = round(min(92.0, test_progress), 1)
                 scan.findings_count = len(all_findings)
+                db.commit()
 
             scan.urls_scanned = (scan.urls_scanned or 0) + 1
             db.commit()
@@ -424,11 +441,14 @@ async def run_scan(scan_id: str) -> None:
         # ---- Target-Level Modules -------------------------------------------
         if "sensitive_files" in modules:
             scan.current_module = "sensitive_files"
+            scan.progress_percent = 93.0
             module_tested_endpoints["sensitive_files"] = len(endpoints)
             db.commit()
             s_found = await sensitive_files.scan(scan.target.base_url, client)
             if s_found:
-                module_findings_count["sensitive_files"] += len(s_found)
+                for f in s_found:
+                    if not getattr(f, "module", None):
+                        f.module = "sensitive_files"
                 all_findings.extend(s_found)
             execution_logs.append({
                 "timestamp": datetime.utcnow().isoformat(),
@@ -441,12 +461,15 @@ async def run_scan(scan_id: str) -> None:
         is_graphql_applicable = False
         if "graphql" in modules:
             scan.current_module = "graphql"
+            scan.progress_percent = 95.0
             db.commit()
             g_found, is_graphql_applicable = await graphql.scan(scan.target.base_url, client)
             if is_graphql_applicable:
                 module_tested_endpoints["graphql"] = 3
                 if g_found:
-                    module_findings_count["graphql"] += len(g_found)
+                    for f in g_found:
+                        if not getattr(f, "module", None):
+                            f.module = "graphql"
                     all_findings.extend(g_found)
                 execution_logs.append({
                     "timestamp": datetime.utcnow().isoformat(),
@@ -484,15 +507,83 @@ async def run_scan(scan_id: str) -> None:
                     ep_row.testing_status = "skipped"
         db.commit()
 
-        # ---- Build Accurate Coverage Matrix ---------------------------------
+        # ---- Correlate + store -------------------------------------------------
+        scan.current_module = "reporting"
+        scan.progress_percent = 97.0
+        db.commit()
+        base_url = scan.target.base_url if scan.target else ""
+        final = correlate(all_findings)
+
+        def _get_module_for_finding(f: ScanFinding) -> str:
+            mod = getattr(f, "module", None)
+            if mod and mod in ALL_KNOWN_MODULES:
+                return mod
+            ft = (f.type or "").lower()
+            if "sql" in ft:
+                return "sql_injection"
+            if "cross-site scripting" in ft or "xss" in ft or ft == "input reflection":
+                return "xss"
+            if "command injection" in ft or "code execution" in ft:
+                return "command_injection"
+            if "clickjacking" in ft:
+                return "clickjacking"
+            if "header" in ft or "content-security-policy" in ft or "csp" in ft or "hsts" in ft:
+                return "security_headers"
+            if "auth" in ft or "jwt" in ft or "session" in ft or "login" in ft:
+                return "auth_security"
+            if "sensitive" in ft or "exposed" in ft or "backup" in ft:
+                return "sensitive_files"
+            if "csrf" in ft or "cross-site request forgery" in ft:
+                return "csrf"
+            if "cors" in ft:
+                return "cors"
+            if "cookie" in ft:
+                return "cookie_security"
+            if "directory listing" in ft:
+                return "directory_listing"
+            if "open redirect" in ft:
+                return "open_redirect"
+            if "path traversal" in ft:
+                return "path_traversal"
+            if "template injection" in ft or "ssti" in ft:
+                return "ssti"
+            if "information disclosure" in ft or "technology detection" in ft or "banner" in ft:
+                return "information_disclosure"
+            if "graphql" in ft:
+                return "graphql"
+            return "other"
+
+        # ---- Build Accurate Coverage Matrix from Persisted Findings ---------
         total_unique_params_tested = len(tested_param_keys)
         module_matrix = []
 
         for m in ALL_KNOWN_MODULES:
             name = MODULE_DISPLAY_NAMES.get(m, m.replace("_", " ").title())
-            f_count = module_findings_count.get(m, 0)
             ep_tested = module_tested_endpoints.get(m, 0)
             param_tested = module_parameters_tested.get(m, 0)
+
+            if m == "xss":
+                confirmed_xss = [
+                    f for f in final
+                    if _get_module_for_finding(f) == "xss"
+                    and f.type != "Input Reflection"
+                    and (
+                        f.severity in (Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, "Critical", "High", "Medium")
+                        or (f.detection_status or "").lower() == "confirmed"
+                    )
+                ]
+                input_reflections = [
+                    f for f in final
+                    if _get_module_for_finding(f) == "xss"
+                    and (
+                        f.type == "Input Reflection"
+                        or f.severity in (Severity.INFORMATIONAL, "Informational")
+                        or (f.detection_status or "").lower() == "potential"
+                    )
+                ]
+                f_count = len(confirmed_xss)
+            else:
+                f_count = len([f for f in final if _get_module_for_finding(f) == m])
 
             if m not in modules:
                 status = "Not Tested"
@@ -507,14 +598,23 @@ async def run_scan(scan_id: str) -> None:
             elif m in INPUT_DEPENDENT_MODULES:
                 if param_tested > 0:
                     status = "Tested"
-                    reason = f"Tested {param_tested} parameter(s) across {ep_tested} endpoint(s)"
+                    if m == "xss" and f_count == 0 and len(input_reflections) > 0:
+                        reason = f"Tested {param_tested} parameter(s) across {ep_tested} endpoint(s) ({len(input_reflections)} safe input reflection(s) observed with proper encoding; no confirmed XSS)"
+                    elif f_count > 0:
+                        vuln_label = "vulnerability" if f_count == 1 else "vulnerabilities"
+                        reason = f"Detected {f_count} confirmed {name} {vuln_label} across {ep_tested} endpoint(s)"
+                    else:
+                        reason = f"Tested {param_tested} parameter(s) across {ep_tested} endpoint(s)"
                 else:
                     status = "Incomplete"
                     reason = "No eligible input parameters discovered on crawled pages"
             else:
                 if ep_tested > 0:
                     status = "Tested"
-                    reason = f"Tested across {ep_tested} endpoint(s)"
+                    if f_count > 0:
+                        reason = f"Detected {f_count} {name} issue(s) across {ep_tested} endpoint(s)"
+                    else:
+                        reason = f"Tested across {ep_tested} endpoint(s)"
                 else:
                     status = "Not Tested"
                     reason = "No applicable endpoints tested"
@@ -551,10 +651,6 @@ async def run_scan(scan_id: str) -> None:
             "module_matrix": module_matrix,
             "execution_logs": execution_logs[-100:],  # preserve latest 100 execution audit records
         }
-
-        # ---- Correlate + store -------------------------------------------------
-        base_url = scan.target.base_url if scan.target else ""
-        final = correlate(all_findings)
         counts = {s: 0 for s in Severity}
         for f in final:
             sev = _severity_enum(f.severity)

@@ -35,6 +35,22 @@ export default function ScanProgress() {
   const [cancelling, setCancelling] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [displayPercent, setDisplayPercent] = useState(0);
+  const [isEstimated, setIsEstimated] = useState(false);
+  const [isDelayed, setIsDelayed] = useState(false);
+  const [isStalled, setIsStalled] = useState(false);
+  const [lastTelemetryTime, setLastTelemetryTime] = useState(Date.now());
+  const [lastTelemetryKey, setLastTelemetryKey] = useState("");
+
+  // Reset state cleanly whenever a new scan is loaded / started
+  useEffect(() => {
+    setDisplayPercent(0);
+    setIsEstimated(false);
+    setIsDelayed(false);
+    setIsStalled(false);
+    setElapsedSeconds(0);
+    setLastTelemetryTime(Date.now());
+    setLastTelemetryKey("");
+  }, [id]);
 
   // Compute live elapsed duration
   useEffect(() => {
@@ -53,35 +69,117 @@ export default function ScanProgress() {
     }
   }, [s?.started_at, s?.completed_at, s?.status]);
 
-  // Animate progress percentage changes smoothly without faking numbers
+  // Detect telemetry updates from backend
   useEffect(() => {
     if (!s) return;
-    const target = Math.min(100, Math.max(0, Math.round(s.progress_percent || 0)));
+    const currentKey = `${s.status}:${s.progress_percent}:${s.current_module}:${s.urls_discovered}:${s.urls_scanned}:${s.parameters_found}:${s.findings_count}`;
+    if (currentKey !== lastTelemetryKey) {
+      setLastTelemetryKey(currentKey);
+      setLastTelemetryTime(Date.now());
+      setIsDelayed(false);
+      setIsStalled(false);
+    }
+  }, [
+    s?.status,
+    s?.progress_percent,
+    s?.current_module,
+    s?.urls_discovered,
+    s?.urls_scanned,
+    s?.parameters_found,
+    s?.findings_count,
+    lastTelemetryKey,
+  ]);
 
-    if (target === 0) {
-      setDisplayPercent(0);
+  // Smooth, gradual incremental progress (1%, 2%, 3%...) with verified vs estimated tracking
+  useEffect(() => {
+    if (!s) return;
+
+    // Handle terminal states immediately
+    if (s.status === "completed") {
+      const timer = setInterval(() => {
+        setDisplayPercent((prev) => {
+          if (prev >= 100) {
+            clearInterval(timer);
+            setIsEstimated(false);
+            return 100;
+          }
+          return prev + 1;
+        });
+      }, 70);
+      return () => clearInterval(timer);
+    }
+
+    if (s.status === "failed" || s.status === "cancelled") {
+      setIsEstimated(false);
       return;
     }
 
-    let startTimestamp = null;
-    const startValue = displayPercent;
-    const delta = target - startValue;
-    if (delta === 0) return;
+    if (s.status !== "running" && s.status !== "pending") return;
 
-    let frameId;
-    const step = (timestamp) => {
-      if (!startTimestamp) startTimestamp = timestamp;
-      const progress = Math.min((timestamp - startTimestamp) / 500, 1);
-      // easeOutCubic
-      const factor = 1 - Math.pow(1 - progress, 3);
-      setDisplayPercent(Math.round(startValue + delta * factor));
-      if (progress < 1) {
-        frameId = requestAnimationFrame(step);
+    // Running / Pending tick timer (every 200ms)
+    const tickInterval = setInterval(() => {
+      const idleMs = Date.now() - lastTelemetryTime;
+
+      // Check stall / delay conditions (Requirement 8)
+      if (idleMs > 40000) {
+        setIsStalled(true);
+        setIsDelayed(true);
+        return; // Freeze progress when stalled
+      } else if (idleMs > 20000) {
+        setIsDelayed(true);
+        return; // Freeze progress when delayed
       }
-    };
-    frameId = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(frameId);
-  }, [s?.progress_percent]);
+
+      const backendRaw = Math.max(0, Math.min(99, Math.round(s.progress_percent || 0)));
+      const backendTarget = Math.max(s.status === "running" ? 1 : 0, backendRaw);
+
+      setDisplayPercent((prev) => {
+        // 1. If display is behind verified backend progress, smoothly step forward (+1%)
+        if (prev < backendTarget) {
+          setIsEstimated(false);
+          return prev + 1;
+        }
+
+        // 2. If display is at or ahead of backend, gently advance estimated progress (Requirement 3)
+        // Respect phase ceilings so estimated progress stays truthful (Requirement 4 & 11)
+        const mod = s.current_module || "";
+        let phaseCeiling = 92;
+        if (s.status === "pending" || mod === "initializing") {
+          phaseCeiling = 3;
+        } else if (mod === "crawler") {
+          phaseCeiling = Math.min(25, Math.max(6, (s.urls_discovered || 1) * 3));
+        } else if (mod === "analyzing_endpoints") {
+          phaseCeiling = 30;
+        } else if (mod === "sensitive_files") {
+          phaseCeiling = 94;
+        } else if (mod === "graphql") {
+          phaseCeiling = 95;
+        } else if (mod === "reporting") {
+          phaseCeiling = 98;
+        }
+
+        // Never exceed phase ceiling and never exceed 98% while running
+        if (prev < phaseCeiling && prev < 98) {
+          // Slow interpolation: roughly +1% every ~1.5s
+          if (Math.random() < 0.15) {
+            setIsEstimated(true);
+            return prev + 1;
+          }
+        }
+
+        setIsEstimated(prev > backendTarget);
+        return prev;
+      });
+    }, 200);
+
+    return () => clearInterval(tickInterval);
+  }, [
+    s?.status,
+    s?.progress_percent,
+    s?.current_module,
+    s?.urls_discovered,
+    lastTelemetryTime,
+  ]);
 
   if (!s) return <Spinner message="Connecting to ZeroTrace scanner engine..." />;
 
@@ -145,9 +243,12 @@ export default function ScanProgress() {
         glowClass: "shadow-[0_0_25px_rgba(16,185,129,0.35)]",
       };
     }
-    if (isPending) {
+
+    const mod = s?.current_module || "";
+
+    if (isPending || mod === "initializing") {
       return {
-        phase: "INITIALIZING",
+        phase: "INITIALIZING SCAN",
         color: "sky",
         accentHex: "#0ea5e9",
         badgeBg: "bg-sky-950/70 border-sky-500/50 text-sky-300",
@@ -156,12 +257,9 @@ export default function ScanProgress() {
       };
     }
 
-    const mod = s.current_module || "";
-
-    // 1. Blue for Discovery
-    if (mod === "crawler" || (s.urls_discovered > 0 && s.urls_scanned === 0)) {
+    if (mod === "crawler") {
       return {
-        phase: "DISCOVERY PHASE",
+        phase: "DISCOVERING WEBSITE PAGES",
         color: "sky",
         accentHex: "#0ea5e9",
         badgeBg: "bg-sky-950/80 border-sky-500/50 text-sky-300",
@@ -170,31 +268,41 @@ export default function ScanProgress() {
       };
     }
 
-    // 2. Orange for Analysis
-    if (
-      [
-        "cookie_security",
-        "information_disclosure",
-        "cors",
-        "clickjacking",
-        "reporting",
-        "summary",
-        "posture",
-      ].includes(mod)
-    ) {
+    if (mod === "analyzing_endpoints") {
       return {
-        phase: "SECURITY ANALYSIS",
-        color: "amber",
-        accentHex: "#f59e0b",
-        badgeBg: "bg-amber-950/80 border-amber-500/50 text-amber-300",
-        radarGradient: "rgba(245, 158, 11, 0.5)",
-        glowClass: "shadow-[0_0_25px_rgba(245,158,11,0.35)]",
+        phase: "ANALYZING ENDPOINTS",
+        color: "sky",
+        accentHex: "#38bdf8",
+        badgeBg: "bg-sky-950/80 border-sky-400/50 text-sky-200",
+        radarGradient: "rgba(56, 189, 248, 0.5)",
+        glowClass: "shadow-[0_0_25px_rgba(56,189,248,0.35)]",
       };
     }
 
-    // 3. Green for Active Scanning (SQLi, XSS, headers, command injection, etc.)
+    if (["sql_injection", "xss", "command_injection", "ssti", "path_traversal"].includes(mod)) {
+      return {
+        phase: "TESTING PARAMETERS",
+        color: "emerald",
+        accentHex: "#10b981",
+        badgeBg: "bg-emerald-950/80 border-emerald-500/50 text-emerald-300",
+        radarGradient: "rgba(16, 185, 129, 0.55)",
+        glowClass: "shadow-[0_0_25px_rgba(16,185,129,0.35)]",
+      };
+    }
+
+    if (mod === "reporting" || mod === "summary" || mod === "posture") {
+      return {
+        phase: "FINALIZING SCAN RESULTS",
+        color: "indigo",
+        accentHex: "#6366f1",
+        badgeBg: "bg-indigo-950/80 border-indigo-500/50 text-indigo-300",
+        radarGradient: "rgba(99, 102, 241, 0.5)",
+        glowClass: "shadow-[0_0_25px_rgba(99,102,241,0.35)]",
+      };
+    }
+
     return {
-      phase: "ACTIVE SCANNING",
+      phase: "RUNNING VULNERABILITY CHECKS",
       color: "emerald",
       accentHex: "#10b981",
       badgeBg: "bg-emerald-950/80 border-emerald-500/50 text-emerald-300",
@@ -207,41 +315,43 @@ export default function ScanProgress() {
 
   // Determine dynamic scanner activity message based on actual backend module & telemetry
   const getActivityMessage = () => {
-    if (isPending) return "Initializing scanner...";
+    if (isPending) return "Initializing scan environment & verifying scope...";
     if (isCompleted) return "Scan completed successfully. Security posture and reports generated.";
     if (isFailed) return s.error_message ? `Scan failed: ${s.error_message}` : "Scan execution encountered an error.";
     if (isCancelled) return "Scan was cancelled by user. Partial results preserved.";
 
-    const mod = s.current_module;
+    const mod = s.current_module || "";
     if (mod === "crawler") {
-      if (formsCount > 0) return "Analyzing forms and inputs...";
-      if ((s.urls_discovered || 0) > 0) return "Discovering website pages...";
-      return "Discovering website pages...";
+      const urls = s.urls_discovered || 0;
+      const forms = formsCount || 0;
+      if (urls > 0 && forms > 0) return `Discovering website pages (${urls} discovered, ${forms} forms mapped)...`;
+      if (urls > 0) return `Discovering website pages (${urls} discovered)...`;
+      return "Discovering website pages & crawling target surface...";
     }
-    if (mod === "sql_injection") return "Testing SQL Injection...";
-    if (mod === "xss") return "Testing Cross-Site Scripting...";
-    if (mod === "security_headers") return "Checking security headers...";
-    if (mod === "csrf") return "Checking Cross-Site Request Forgery (CSRF)...";
-    if (mod === "cookie_security") return "Auditing cookie security & flags...";
-    if (mod === "sensitive_files") return "Scanning for sensitive files & secrets...";
-    if (mod === "command_injection") return "Testing Command Injection...";
-    if (mod === "ssti") return "Auditing Server-Side Template Injection (SSTI)...";
-    if (mod === "path_traversal") return "Testing directory & path traversal...";
-    if (mod === "cors") return "Evaluating Cross-Origin Resource Sharing (CORS)...";
-    if (mod === "clickjacking") return "Auditing clickjacking defenses...";
+    if (mod === "analyzing_endpoints") {
+      const urls = s.urls_discovered || 0;
+      const params = s.parameters_found || 0;
+      return `Analyzing discovered endpoints (${urls} routes, ${params} parameters found)...`;
+    }
+    if (mod === "sql_injection") return "Testing parameters for SQL Injection (Error, Boolean, Auth Bypass)...";
+    if (mod === "xss") return "Testing parameters for Cross-Site Scripting (Reflected & DOM XSS)...";
+    if (mod === "command_injection") return "Testing parameters for Remote Command Injection...";
+    if (mod === "ssti") return "Testing parameters for Server-Side Template Injection (SSTI)...";
+    if (mod === "path_traversal") return "Testing parameters for Path & Directory Traversal...";
+    if (mod === "clickjacking") return "Running vulnerability checks on Clickjacking defenses...";
+    if (mod === "security_headers") return "Running vulnerability checks on HTTP security headers...";
+    if (mod === "cookie_security") return "Auditing cookie security flags (HttpOnly, Secure, SameSite)...";
+    if (mod === "csrf") return "Checking Cross-Site Request Forgery (CSRF) protections...";
+    if (mod === "cors") return "Evaluating Cross-Origin Resource Sharing (CORS) rules...";
     if (mod === "auth_security") return "Testing authentication & route access controls...";
-    if (mod === "directory_listing") return "Probing directory listing & exposures...";
-    if (mod === "information_disclosure") return "Analyzing technical disclosures & stack traces...";
-    if (mod === "graphql") return "Auditing GraphQL schema & introspection...";
-    if (mod === "reporting" || mod === "summary" || mod === "posture") return "Generating scan report...";
+    if (mod === "sensitive_files") return "Scanning for exposed sensitive files, backups & credentials...";
+    if (mod === "graphql") return "Auditing GraphQL schema and introspection safety...";
+    if (mod === "reporting" || mod === "summary" || mod === "posture") return "Finalizing scan results & preparing executive assessment...";
 
     if ((s.urls_scanned || 0) > 0 || (s.parameters_found || 0) > 0) {
-      return "Analyzing vulnerabilities...";
+      return "Running vulnerability checks across discovered endpoints...";
     }
-    if ((s.urls_discovered || 0) > 0) {
-      return "Discovering website pages...";
-    }
-    return "Initializing scanner...";
+    return "Initializing scan...";
   };
 
   return (
@@ -483,7 +593,10 @@ export default function ScanProgress() {
                 }`}
                 style={{ backgroundColor: phaseInfo.accentHex }}
               />
-              <span className="font-mono uppercase tracking-wider text-[11px] text-slate-300">
+              <span
+                data-testid="scan-phase-description"
+                className="font-mono uppercase tracking-wider text-[11px] text-slate-300"
+              >
                 {phaseInfo.phase}
               </span>
               <span className="text-slate-500">•</span>
@@ -495,6 +608,19 @@ export default function ScanProgress() {
             <h2 className="text-xl font-semibold text-slate-100 tracking-tight transition-all">
               {getActivityMessage()}
             </h2>
+
+            {/* Delayed / Stalled warning badge (Requirement 8) */}
+            {isStalled ? (
+              <div className="mt-3 px-3 py-2 rounded-lg bg-amber-950/80 border border-amber-600/70 text-amber-200 text-xs font-mono flex items-center justify-center gap-2 shadow-lg">
+                <span className="text-sm">⚠️</span>
+                <span>Scan progress delayed: Engine response taking longer than expected. Deep testing in progress.</span>
+              </div>
+            ) : isDelayed ? (
+              <div className="mt-2.5 inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-950/40 border border-amber-700/50 text-amber-400 text-xs font-mono">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                <span>Waiting for target server response (syncing telemetry...)</span>
+              </div>
+            ) : null}
 
             {s.error_message && (
               <p className="text-rose-400 text-xs mt-2.5 font-mono bg-rose-950/40 border border-rose-900/60 p-2.5 rounded-lg max-w-lg mx-auto">
@@ -527,9 +653,35 @@ export default function ScanProgress() {
                   <span className="text-slate-400">Progress</span>
                 )}
               </span>
-              <span className="text-lg font-bold font-mono text-slate-100 transition-all duration-300">
-                {displayPercent}%
-              </span>
+
+              {/* Distinguishable Confirmed vs Estimated Badge and Percentage (Requirement 11) */}
+              <div className="flex items-center gap-2.5">
+                {isRunning && (
+                  isEstimated ? (
+                    <span
+                      title="Progress interpolated smoothly while waiting for next engine checkpoint"
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-medium bg-amber-950/60 text-amber-300 border border-amber-700/50 shadow-sm"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                      <span>~ Estimated</span>
+                    </span>
+                  ) : (
+                    <span
+                      title="Verified backend engine progress metric"
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-medium bg-emerald-950/60 text-emerald-300 border border-emerald-600/40 shadow-sm"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                      <span>⚡ Confirmed</span>
+                    </span>
+                  )
+                )}
+                <span
+                  data-testid="scan-progress-percentage"
+                  className="text-lg font-bold font-mono text-slate-100 transition-all duration-300"
+                >
+                  {displayPercent}%
+                </span>
+              </div>
             </div>
 
             {/* Outer Progress Track */}
@@ -541,7 +693,7 @@ export default function ScanProgress() {
 
               {/* Inner Animated Progress Fill */}
               <div
-                className={`h-full rounded-full transition-all duration-500 ease-out relative overflow-hidden ${
+                className={`h-full rounded-full transition-all duration-300 ease-out relative overflow-hidden ${
                   isFailed
                     ? "bg-rose-600"
                     : isCancelled
@@ -549,7 +701,9 @@ export default function ScanProgress() {
                     : isCompleted
                     ? "bg-emerald-500"
                     : isRunning
-                    ? phaseInfo.color === "sky"
+                    ? isEstimated
+                      ? "bg-gradient-to-r from-sky-500 via-emerald-500 to-amber-500 shadow-[0_0_12px_rgba(245,158,11,0.4)]"
+                      : phaseInfo.color === "sky"
                       ? "bg-sky-500 shadow-[0_0_12px_rgba(14,165,233,0.5)]"
                       : phaseInfo.color === "amber"
                       ? "bg-amber-500 shadow-[0_0_12px_rgba(245,158,11,0.5)]"
@@ -558,8 +712,18 @@ export default function ScanProgress() {
                 }`}
                 style={{ width: `${displayPercent}%` }}
               >
+                {/* Visual distinction: Striped pattern overlay when estimated */}
+                {isRunning && isEstimated && (
+                  <div
+                    className="absolute inset-0 opacity-30 pointer-events-none"
+                    style={{
+                      backgroundImage: "repeating-linear-gradient(45deg, transparent, transparent 6px, rgba(255,255,255,0.4) 6px, rgba(255,255,255,0.4) 12px)",
+                    }}
+                  />
+                )}
+
                 {/* Moving Shimmer Effect inside progress fill when running */}
-                {isRunning && displayPercent > 0 && (
+                {isRunning && displayPercent > 0 && !isEstimated && (
                   <div className="progress-shimmer-overlay pointer-events-none" />
                 )}
 

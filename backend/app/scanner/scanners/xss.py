@@ -76,12 +76,13 @@ async def scan(endpoint: DiscoveredEndpoint, client: SafeHTTPClient) -> List[Sca
                     severity="High",
                     confidence="High confidence",
                     cwe_id="CWE-79",
-                    mitre_attack="T1059.007",
+                    mitre_attack="T1189",
                     detection_status="Confirmed",
                     evidence=f"Dangerous DOM manipulation pattern detected in script: '{snippet}' ({desc}).",
                     description="Client-side script reads from an attacker-controllable source (such as location.search or hash) and passes it directly to an unsafe DOM sink.",
                     impact="Allows execution of arbitrary JavaScript in the victim's browser context without server round-trip.",
                     remediation="Use safe DOM properties like textContent or innerText, avoid document.write and eval, and sanitize HTML using DOMPurify.",
+                    module="xss",
                 ))
                 break
 
@@ -116,39 +117,76 @@ async def scan(endpoint: DiscoveredEndpoint, client: SafeHTTPClient) -> List[Sca
             continue
 
         # Check if metacharacters were unencoded
-        unencoded_angle = f"{marker}<b>" in body
-        unencoded_quote = f"{marker}<b>\"" in body or f"{marker}<b>'" in body
+        unencoded_angle = f"{marker}<b>" in body or f"{marker}<script>" in body or f"{marker}<img>" in body
+        unencoded_quote = f"{marker}<b>\"" in body or f"{marker}<b>'" in body or f"{marker}\"" in body or f"{marker}'" in body
+
+        # If initial probe reflected the marker but metacharacters were not yet confirmed unencoded,
+        # test a targeted verification probe based on the classified context
+        if not unencoded_angle and not (context in ("html_attribute", "javascript") and unencoded_quote):
+            sec_marker = "ztxss" + uuid.uuid4().hex[:6]
+            if context == "html_body":
+                sec_probe = f"{sec_marker}<script>/*test*/</script>"
+            elif context == "html_attribute":
+                sec_probe = f'"{sec_marker} onfocus="1'
+            elif context == "javascript":
+                sec_probe = f'";/*{sec_marker}*/'
+            else:
+                sec_probe = f"-->{sec_marker}<b>"
+
+            try:
+                if location in ("body", "form") or endpoint.method.upper() == "POST":
+                    sec_resp = await client.post(endpoint.url, data=_set_body_param(body_defaults, param.name, sec_probe))
+                else:
+                    sec_resp = await client.get(_set_url_param(endpoint.url, param.name, sec_probe))
+                if sec_resp and sec_resp.text:
+                    if (context == "html_body" and f"{sec_marker}<script>" in sec_resp.text) or \
+                       (context == "html_attribute" and f'"{sec_marker} onfocus=' in sec_resp.text) or \
+                       (context == "javascript" and f'";/*{sec_marker}*/' in sec_resp.text) or \
+                       (context == "html_comment" and f"-->{sec_marker}<b>" in sec_resp.text):
+                        unencoded_angle = True
+                        probe = sec_probe
+            except Exception:
+                pass
 
         if unencoded_angle or (context in ("html_attribute", "javascript") and unencoded_quote):
             severity = "High"
             confidence = "High confidence"
             detection_status = "Confirmed"
             vtype = "Reflected XSS"
+            mitre_id = "T1189"
             evidence = f"Unsanitized marker reflected in '{context}' context with HTML metacharacters unencoded: '{probe}'."
+            desc = f"User-supplied input in parameter '{param.name}' is reflected unencoded into the HTTP response body in {context} context, allowing arbitrary script execution."
+            impact = "An attacker could execute arbitrary JavaScript in the victim's session, hijack cookies, or perform unauthorized client actions."
+            remediation = "Apply context-aware contextual HTML/JavaScript output encoding, implement a strict Content-Security-Policy (CSP), and validate inputs."
         else:
             severity = "Informational"
             confidence = "Low confidence"
             detection_status = "Potential"
             vtype = "Input Reflection"
-            evidence = f"Marker reflected in '{context}' context, but metacharacters appear properly encoded or filtered."
+            mitre_id = "T1059.007"
+            evidence = f"User input marker '{marker}' is reflected in '{context}' context, but HTML metacharacters (<, >, \", ') are properly encoded or filtered. No executable JavaScript was possible."
+            desc = f"User-supplied input in parameter '{param.name}' is reflected into the HTTP response body in {context} context with proper encoding. While not exploitable as Cross-Site Scripting, input reflection should be monitored."
+            impact = "None identified. HTML metacharacters are safely neutralized or encoded by the application."
+            remediation = "Continue applying strict context-aware output encoding and maintain a strong Content-Security-Policy (CSP)."
 
         findings.append(ScanFinding(
             type=vtype,
-            category="Injection",
-            owasp_category="A03:2021 - Injection",
+            category="Injection" if vtype != "Input Reflection" else "Information Disclosure",
+            owasp_category="A03:2021 - Injection" if vtype != "Input Reflection" else "A05:2021 - Security Misconfiguration",
             url=endpoint.url,
             method=endpoint.method.upper(),
             parameter=param.name,
             severity=severity,
             confidence=confidence,
             cwe_id="CWE-79",
-            mitre_attack="T1059.007",
+            mitre_attack=mitre_id,
             detection_status=detection_status,
             evidence=evidence,
-            description=f"User-supplied input in parameter '{param.name}' is reflected into the HTTP response body in {context} context.",
-            impact="An attacker could execute arbitrary JavaScript in the victim's session, hijack cookies, or perform unauthorized client actions.",
-            remediation="Apply context-aware contextual HTML/JavaScript output encoding, implement a strict Content-Security-Policy (CSP), and validate inputs.",
+            description=desc,
+            impact=impact,
+            remediation=remediation,
             evidence_details={"context": context, "probe": probe, "location": location},
+            module="xss",
         ))
 
     return findings

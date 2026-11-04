@@ -243,6 +243,54 @@ def deduplicate_findings(findings: List[Any]) -> List[UniqueFinding]:
     return unique_list
 
 
+def _matches_module_finding(f: Any, module_name: str) -> bool:
+    ft = str(getattr(f, "finding_type", "") or getattr(f, "type", "") or "").lower()
+    fcat = str(getattr(f, "category", "") or "").lower()
+    fsev = str(getattr(f, "severity", "") or "").lower()
+    fdet = str(getattr(f, "detection_status", "") or "").lower()
+    mod = module_name.lower()
+
+    if mod == "xss":
+        # Only count confirmed/actionable XSS vulnerabilities (not safe Input Reflection)
+        return (
+            ("cross-site scripting" in ft or "xss" in ft or "reflected xss" in ft or "dom xss" in ft)
+            and ft != "input reflection"
+            and (fsev in ("critical", "high", "medium") or fdet == "confirmed")
+        )
+    if mod == "sql_injection":
+        return "sql" in ft
+    if mod == "command_injection":
+        return "command injection" in ft or "code execution" in ft
+    if mod == "clickjacking":
+        return "clickjacking" in ft
+    if mod == "security_headers":
+        return "header" in ft or "content-security-policy" in ft or "csp" in ft or "hsts" in ft
+    if mod == "auth_security":
+        return "auth" in ft or "jwt" in ft or "session" in ft or "login" in ft or "brute" in ft
+    if mod == "sensitive_files":
+        return "sensitive file" in ft or "exposed" in ft or "backup" in ft or "directory listing" in ft
+    if mod == "csrf":
+        return "csrf" in ft or "cross-site request forgery" in ft
+    if mod == "cors":
+        return "cors" in ft
+    if mod == "cookie_security":
+        return "cookie" in ft
+    if mod == "directory_listing":
+        return "directory listing" in ft
+    if mod == "open_redirect":
+        return "open redirect" in ft
+    if mod == "path_traversal":
+        return "path traversal" in ft
+    if mod == "ssti":
+        return "template injection" in ft or "ssti" in ft
+    if mod == "information_disclosure":
+        return "information disclosure" in ft or "technology detection" in ft or "banner" in ft
+    if mod == "graphql":
+        return "graphql" in ft
+
+    return mod in fcat or mod.replace("_", " ") in ft
+
+
 def calculate_security_posture(
     scan: Any,
     findings: List[Any],
@@ -461,10 +509,37 @@ def calculate_security_posture(
         coverage_limitations.extend(preliminary_reasons)
 
     coverage_summary = _get_val(scan, "coverage_summary", None)
-    if not coverage_summary:
+    if coverage_summary and "module_matrix" in coverage_summary:
+        matrix = []
+        input_reflections = [
+            f for f in unique_findings
+            if (f.finding_type or "") == "Input Reflection"
+            or ((f.severity or "").lower() == "informational" and "reflection" in (f.finding_type or "").lower())
+        ]
+        for row in coverage_summary.get("module_matrix", []):
+            r = dict(row)
+            mod = r.get("module")
+            if mod == "xss":
+                confirmed_xss = [f for f in unique_findings if _matches_module_finding(f, "xss")]
+                r["findings_count"] = len(confirmed_xss)
+                if len(confirmed_xss) == 0 and len(input_reflections) > 0:
+                    pts = r.get("parameters_tested", parameters_found)
+                    ets = r.get("endpoints_tested", urls_scanned)
+                    r["reason"] = f"Tested {pts} parameter(s) across {ets} endpoint(s) ({len(input_reflections)} safe input reflection(s) observed with proper encoding; no confirmed XSS)"
+            elif mod:
+                r["findings_count"] = len([f for f in unique_findings if _matches_module_finding(f, mod)])
+            matrix.append(r)
+        coverage_summary = dict(coverage_summary)
+        coverage_summary["module_matrix"] = matrix
+    elif not coverage_summary:
         from app.scanner.engine import ALL_KNOWN_MODULES, MODULE_DISPLAY_NAMES, INPUT_DEPENDENT_MODULES
         mod_set = set(modules or ALL_KNOWN_MODULES)
         matrix = []
+        input_reflections = [
+            f for f in unique_findings
+            if (f.finding_type or "") == "Input Reflection"
+            or ((f.severity or "").lower() == "informational" and "reflection" in (f.finding_type or "").lower())
+        ]
         for m in ALL_KNOWN_MODULES:
             reason = ""
             if m not in mod_set:
@@ -484,14 +559,19 @@ def calculate_security_posture(
                 status = "Tested" if urls_scanned > 0 else "Not Tested"
                 reason = f"Tested across {urls_scanned} endpoint(s)" if urls_scanned > 0 else "No endpoints scanned"
 
+            if m == "xss":
+                confirmed_xss = [f for f in unique_findings if _matches_module_finding(f, "xss")]
+                f_count = len(confirmed_xss)
+                if f_count == 0 and len(input_reflections) > 0 and status == "Tested":
+                    reason = f"Tested {parameters_found} parameter(s) across {urls_scanned} endpoint(s) ({len(input_reflections)} safe input reflection(s) observed with proper encoding; no confirmed XSS)"
+            else:
+                f_count = len([f for f in unique_findings if _matches_module_finding(f, m)])
+
             matrix.append({
                 "module": m,
                 "name": MODULE_DISPLAY_NAMES.get(m, m.replace("_", " ").title()),
                 "status": status,
-                "findings_count": len([
-                    f for f in unique_findings
-                    if m in f.category.lower() or m.replace("_", " ") in f.finding_type.lower()
-                ]),
+                "findings_count": f_count,
                 "endpoints_tested": urls_scanned if status == "Tested" else 0,
                 "parameters_tested": parameters_found if status == "Tested" and m in INPUT_DEPENDENT_MODULES else 0,
                 "reason": reason,

@@ -335,7 +335,7 @@ def get_application_trends(app_id: str, db: Session = Depends(get_db)):
 
     scans = (
         db.query(Scan)
-        .filter(Scan.application_id == app.id, Scan.status == ScanStatus.COMPLETED)
+        .filter(Scan.application_id == app.id, Scan.status == ScanStatus.COMPLETED, (Scan.is_deleted == False) | (Scan.is_deleted.is_(None)))
         .order_by(Scan.created_at.asc())
         .all()
     )
@@ -516,3 +516,97 @@ def rescan_application(app_id: str, db: Session = Depends(get_db)):
     res.application_name = app.name
     return res
 
+
+
+@router.delete("/{app_id}")
+def delete_application(app_id: str, db: Session = Depends(get_db)):
+    """
+    Explicitly and safely delete a monitored website/application and its targets,
+    scans, and dependent data. Also cleans up any duplicate application entries
+    with the identical name to ensure the website does not phantom-reappear.
+    """
+    app = db.get(Application, app_id)
+    if not app:
+        raise HTTPException(404, "Application not found")
+
+    app_name = app.name
+
+    # Identify this application and any duplicates with the identical name
+    matching_apps = (
+        db.query(Application)
+        .filter(Application.name == app_name)
+        .all()
+    )
+    if not matching_apps:
+        matching_apps = [app]
+    elif app not in matching_apps:
+        matching_apps.append(app)
+
+    matching_app_ids = [a.id for a in matching_apps]
+
+    # Check for active running scan
+    running_scan = (
+        db.query(Scan)
+        .filter(Scan.application_id.in_(matching_app_ids), Scan.status == ScanStatus.RUNNING)
+        .first()
+    )
+    if running_scan:
+        raise HTTPException(400, "Cannot delete website with an actively running scan. Stop or cancel the scan first.")
+
+    try:
+        from app.models.activity import Activity
+        from app.models.target import Target
+
+        # Collect all scans and targets across all matching applications
+        all_scans = (
+            db.query(Scan)
+            .filter(Scan.application_id.in_(matching_app_ids))
+            .all()
+        )
+        scan_ids = [s.id for s in all_scans]
+        if scan_ids:
+            db.query(Activity).filter(Activity.scan_id.in_(scan_ids)).delete(synchronize_session=False)
+            for s in all_scans:
+                db.delete(s)
+
+        # Activities pointing directly to these applications
+        db.query(Activity).filter(Activity.application_id.in_(matching_app_ids)).delete(synchronize_session=False)
+
+        # Targets belonging to these applications
+        targets = (
+            db.query(Target)
+            .filter(Target.application_id.in_(matching_app_ids))
+            .all()
+        )
+        for t in targets:
+            for ts in list(t.scans):
+                db.query(Activity).filter(Activity.scan_id == ts.id).delete(synchronize_session=False)
+                db.delete(ts)
+            db.delete(t)
+
+        # Orphan targets that share the exact same name or hostname without another application
+        orphan_targets = (
+            db.query(Target)
+            .filter(
+                (Target.name == app_name) | (Target.hostname == app_name),
+                Target.application_id.is_(None),
+            )
+            .all()
+        )
+        for ot in orphan_targets:
+            for ts in list(ot.scans):
+                db.query(Activity).filter(Activity.scan_id == ts.id).delete(synchronize_session=False)
+                db.delete(ts)
+            db.delete(ot)
+
+        # Delete all matching applications
+        for current_app in matching_apps:
+            db.delete(current_app)
+
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to delete application %s: %s", app_id, exc)
+        raise HTTPException(500, f"Failed to delete website: {str(exc)}")
+
+    return {"status": "deleted", "application_id": app_id, "name": app_name, "deleted_count": len(matching_apps)}
