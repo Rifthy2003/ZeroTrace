@@ -157,8 +157,20 @@ class BrowserCrawler:
                     req_url = req.url
                     method = req.method.upper()
                     if is_same_origin(self.base_url, req_url):
+                        # Filter out repetitive dynamic /socket.io/ or websocket polling requests with random timestamps
+                        if "/socket.io" in req_url or "/engine.io" in req_url or "transport=polling" in req_url:
+                            base_socket = urljoin(self.base_url, "/socket.io/")
+                            if not any(r["url"] == base_socket for r in self.captured_api_requests):
+                                self.captured_api_requests.append({
+                                    "url": base_socket,
+                                    "method": "GET",
+                                    "content_type": "application/json",
+                                    "post_data": None,
+                                })
+                            return
+
                         res_type = req.resource_type
-                        if res_type in ("fetch", "xhr") or any(k in req_url for k in ("/api/", "/search", "/login", "/signup", "vulnerable", "safe-endpoint")):
+                        if res_type in ("fetch", "xhr") or any(k in req_url for k in ("/api/", "/rest/", "/search", "/login", "/signup", "/auth/", "vulnerable", "safe-endpoint")):
                             headers = dict(req.headers)
                             content_type = headers.get("content-type", "")
                             post_data = req.post_data
@@ -357,32 +369,40 @@ class BrowserCrawler:
 
                             # If form is a React form with JSON submission intent or associated API
                             form_type = f.get("formType", "")
-                            if form_type == "login":
+                            is_login_context = form_type == "login" or any(k in route.lower() for k in ("login", "signin")) or any(k in target_url.lower() for k in ("login", "signin"))
+                            if is_login_context:
                                 # Identify candidate REST login endpoints from discovered APIs or standard routes
                                 matched_login_apis = [
                                     api for api in discovered_api_urls
                                     if any(k in api.lower() for k in ("login", "signin"))
                                 ]
-                                candidate_login_urls = [
+                                candidate_login_urls = list(dict.fromkeys([
                                     urljoin(self.base_url, api) for api in matched_login_apis
-                                ] or [
+                                ] + [
                                     urljoin(self.base_url, "/rest/user/login"),
                                     urljoin(self.base_url, "/api/login"),
                                     urljoin(self.base_url, "/api/Users/login"),
+                                ]))
+
+                                # Standardize authentication JSON payload parameters
+                                login_json_params = [
+                                    DiscoveredParameter(name="email", location="json", sample_value="test@example.com"),
+                                    DiscoveredParameter(name="password", location="json", sample_value="password123"),
                                 ]
+                                for p in form_params:
+                                    p_low = p.name.lower()
+                                    if any(k in p_low for k in ("email", "mail", "user", "login")) and not any(j.name == "email" for j in login_json_params):
+                                        login_json_params.append(DiscoveredParameter(name="email", location="json", sample_value=p.sample_value or "test@example.com"))
+                                    elif "pass" in p_low and not any(j.name == "password" for j in login_json_params):
+                                        login_json_params.append(DiscoveredParameter(name="password", location="json", sample_value=p.sample_value or "password123"))
+
                                 for api_login_url in candidate_login_urls:
                                     endpoints.append(DiscoveredEndpoint(
                                         url=api_login_url,
                                         method="POST",
                                         status_code=200,
                                         content_type="application/json",
-                                        parameters=[
-                                            DiscoveredParameter(name=p.name, location="json", sample_value=p.sample_value)
-                                            for p in form_params
-                                        ] if form_params else [
-                                            DiscoveredParameter(name="email", location="json", sample_value="test@example.com"),
-                                            DiscoveredParameter(name="password", location="json", sample_value="password123"),
-                                        ],
+                                        parameters=login_json_params,
                                         has_form=True,
                                     ))
                             elif form_type == "signup":
@@ -530,17 +550,52 @@ class BrowserCrawler:
 
                 function inspectInput(el, defaultLocation = 'query') {
                     if (!el) return null;
-                    const name = el.getAttribute('name') ||
-                                 el.getAttribute('id') ||
-                                 el.getAttribute('data-testid') ||
-                                 el.getAttribute('aria-label') ||
-                                 el.getAttribute('placeholder') || '';
+                    const rawName = el.getAttribute('name') || '';
+                    const rawId = el.getAttribute('id') || '';
+                    const rawAria = el.getAttribute('aria-label') || '';
+                    const rawPlaceholder = el.getAttribute('placeholder') || '';
+                    const type = (el.getAttribute('type') || 'text').toLowerCase();
+
+                    // Map framework synthetic names (e.g. ng.form0.email) to semantic names
+                    let name = rawName;
+                    if (!name || name.startsWith('ng.') || name.startsWith('ng_') || name.includes('formControl') || name.includes('.')) {
+                        if (rawId && !rawId.includes('.') && !rawId.includes('mat-')) {
+                            name = rawId;
+                        } else if (type === 'password' || rawAria.toLowerCase().includes('password')) {
+                            name = 'password';
+                        } else if (type === 'email' || rawAria.toLowerCase().includes('email')) {
+                            name = 'email';
+                        } else {
+                            name = rawId || rawAria || rawPlaceholder || rawName;
+                        }
+                    }
                     const cleanName = name.trim().replace(/[\\s\\-_]+/g, '_').toLowerCase();
                     if (!cleanName || cleanName.length === 0) return null;
-                    const type = (el.getAttribute('type') || 'text').toLowerCase();
                     const val = el.value || el.getAttribute('value') || '';
                     const placeholder = el.getAttribute('placeholder') || '';
                     return { name: cleanName, type, value: val, placeholder, location: defaultLocation };
+                }
+
+                // Helper to classify form intent across React, Angular, Vue
+                function classifyForm(container, btnText) {
+                    const hasPassword = container.querySelector('input[type="password"]') !== null;
+                    const bLower = (btnText || '').toLowerCase();
+                    const hashLower = (window.location.hash || '').toLowerCase();
+                    const pathLower = (window.location.pathname || '').toLowerCase();
+                    const isLoginPage = hashLower.includes('login') || hashLower.includes('signin') || pathLower.includes('login') || pathLower.includes('signin');
+                    const isSignupPage = hashLower.includes('signup') || hashLower.includes('register') || pathLower.includes('signup') || pathLower.includes('register');
+                    const isSearchPage = hashLower.includes('search') || pathLower.includes('search');
+
+                    if (bLower.includes('login') || bLower.includes('log in') || bLower.includes('sign in') || bLower.includes('signin') || (hasPassword && !isSignupPage) || isLoginPage) {
+                        return 'login';
+                    }
+                    if (bLower.includes('sign up') || bLower.includes('signup') || bLower.includes('register') || isSignupPage) {
+                        return 'signup';
+                    }
+                    if (bLower.includes('search') || bLower.includes('find') || isSearchPage || container.querySelector('input[type="search"]')) {
+                        return 'search';
+                    }
+                    return 'general';
                 }
 
                 // 1. Inspect explicit <form> tags
@@ -553,12 +608,9 @@ class BrowserCrawler:
                         .filter(Boolean);
 
                     const btnText = Array.from(f.querySelectorAll('button, input[type="submit"]'))
-                        .map(b => (b.innerText || b.value || '').toLowerCase()).join(' ');
+                        .map(b => (b.innerText || b.value || b.getAttribute('aria-label') || b.id || '').toLowerCase()).join(' ');
 
-                    let formType = 'general';
-                    if (btnText.includes('login') || btnText.includes('sign in')) formType = 'login';
-                    else if (btnText.includes('sign up') || btnText.includes('register')) formType = 'signup';
-                    else if (btnText.includes('search') || btnText.includes('find')) formType = 'search';
+                    const formType = classifyForm(f, btnText);
 
                     forms.push({ action, method, inputs, formType, isExplicitForm: true });
                     inputs.forEach(inp => seenInputNames.add(inp.name));
@@ -573,17 +625,9 @@ class BrowserCrawler:
                         .filter(Boolean);
                     if (inputs.length > 0) {
                         const btn = c.querySelector('button, input[type="submit"]');
-                        const btnText = (btn ? (btn.innerText || btn.value || '') : '').toLowerCase();
-                        let formType = 'general';
-                        let method = 'POST';
-                        if (btnText.includes('search') || btnText.includes('find')) {
-                            formType = 'search';
-                            method = 'GET';
-                        } else if (btnText.includes('login') || btnText.includes('sign in')) {
-                            formType = 'login';
-                        } else if (btnText.includes('sign up') || btnText.includes('register')) {
-                            formType = 'signup';
-                        }
+                        const btnText = (btn ? (btn.innerText || btn.value || btn.getAttribute('aria-label') || btn.id || '') : '').toLowerCase();
+                        const formType = classifyForm(c, btnText);
+                        const method = formType === 'search' ? 'GET' : 'POST';
 
                         forms.push({
                             action: c.getAttribute('data-api') || c.getAttribute('data-action') || window.location.pathname,
@@ -757,27 +801,27 @@ class BrowserCrawler:
         return routes
 
     def _extract_api_endpoints_from_text(self, text: str) -> Set[str]:
-        """Extract REST API endpoints mentioned in client scripts."""
+        """Extract REST API endpoints mentioned in client scripts, supporting single quotes, double quotes, and ES6 template backticks."""
         apis: Set[str] = set()
-        # Patterns like fetch('/rest/...') or axios.get('/api/...') or /auth/login
+        # Patterns like fetch('/rest/...') or axios.get('/api/...') or /auth/login or `/rest/user/login`
         matches = re.findall(
-            r'["\'](/(?:rest|api|v[0-9]+|auth|oauth|user|users|vulnerable|safe)[a-zA-Z0-9_\-\/\?=&]*)["\']',
+            r'[`"\'](/(?:rest|api|v[0-9]+|auth|oauth|user|users|vulnerable|safe)[a-zA-Z0-9_\-\/\?=&]*)[\x60"\']',
             text,
             re.IGNORECASE,
         )
         for m in matches:
-            clean_m = m.split("#")[0].rstrip(",;'\")")
+            clean_m = m.split("#")[0].rstrip(",;'\")`")
             if clean_m and len(clean_m) > 1:
                 apis.add(clean_m)
 
         # Also capture relative rest/... or api/... references in scripts
         rel_matches = re.findall(
-            r'["\']((?:rest|api)/[a-zA-Z0-9_\-\/\?=&]+)["\']',
+            r'[`"\']((?:rest|api)/[a-zA-Z0-9_\-\/\?=&]+)[\x60"\']',
             text,
             re.IGNORECASE,
         )
         for rm in rel_matches:
-            clean_rm = "/" + rm.split("#")[0].rstrip(",;'\")")
+            clean_rm = "/" + rm.split("#")[0].rstrip(",;'\")`")
             apis.add(clean_rm)
 
         return apis

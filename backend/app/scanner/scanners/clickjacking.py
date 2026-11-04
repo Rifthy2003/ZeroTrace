@@ -11,6 +11,10 @@ from app.scanner.models import DiscoveredEndpoint, ScanFinding
 
 def scan(endpoint: DiscoveredEndpoint) -> List[ScanFinding]:
     findings: List[ScanFinding] = []
+    url_lower = (endpoint.url or "").lower()
+    if "/socket.io" in url_lower or "/engine.io" in url_lower or "transport=polling" in url_lower:
+        return findings
+
     # Only applicable to HTML pages
     ctype = endpoint.content_type or endpoint.response_headers.get("content-type", "")
     if "text/html" not in ctype.lower():

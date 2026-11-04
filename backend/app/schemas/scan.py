@@ -31,7 +31,7 @@ class ScanCreateRequest(BaseModel):
     max_depth: int = 2
     max_urls: int = 50
     request_delay: float = 0.25
-    modules: List[str] = AVAILABLE_MODULES
+    modules: Optional[List[str]] = None
     authorization_confirmed: bool = False
     enable_browser_discovery: bool = True
     auth_config: Optional[dict] = None

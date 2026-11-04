@@ -37,6 +37,13 @@ PASSIVE_MODULES: Set[str] = {
     "directory_listing",
 }
 
+QUICK_SCAN_MODULES: List[str] = [
+    "sql_injection",
+    "xss",
+    "clickjacking",
+    "command_injection",
+]
+
 
 def _normalize_host(hostname: str) -> str:
     if not hostname:
@@ -207,6 +214,23 @@ def compute_effective_scan_config(
         initial_modules = list(p_data["modules"])
     else:
         initial_modules = list(ALL_KNOWN_MODULES)
+
+    # 1b. Quick Scan module constraint:
+    # Ensure Quick Scan strictly executes only its required modules:
+    # SQL Injection, Cross-Site Scripting (XSS), Clickjacking, and Command Injection.
+    # Security Headers, Information Disclosure, CSRF, and other deep-scanning modules are dropped.
+    is_quick_scan = (
+        (p_data and p_data.get("name") == "Quick Scan")
+        or (user_overrides and str(user_overrides.get("scan_type", "")).strip().lower() == "quick scan")
+    )
+    if is_quick_scan:
+        quick_allowed = set(p_data.get("modules") if (p_data and p_data.get("modules")) else QUICK_SCAN_MODULES)
+        dropped_for_quick = [m for m in initial_modules if m not in quick_allowed]
+        if dropped_for_quick:
+            effective_restrictions["dropped_modules"].extend(
+                [f"{m} (Disabled in Quick Scan - available in Full Scan)" for m in dropped_for_quick]
+            )
+        initial_modules = [m for m in initial_modules if m in quick_allowed]
 
     # 2. Passive scan constraint
     send_payloads = True

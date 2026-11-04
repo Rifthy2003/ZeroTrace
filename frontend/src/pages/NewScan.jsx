@@ -12,17 +12,22 @@ const ALL_MODULES = [
   { id: "csrf", label: "CSRF & Form Security", safe: true },
   { id: "xss", label: "Cross-Site Scripting (XSS)", safe: true },
   { id: "open_redirect", label: "Open Redirect", safe: true },
-  { id: "sql_injection", label: "SQL Injection Testing", safe: false },
+  { id: "sql_injection", label: "SQL Injection Testing", safe: true },
+  { id: "clickjacking", label: "Clickjacking / UI Redress", safe: true },
   { id: "command_injection", label: "Command Injection Testing", safe: false },
   { id: "cors", label: "CORS Misconfiguration", safe: false },
-  { id: "clickjacking", label: "Clickjacking / UI Redress", safe: false },
   { id: "path_traversal", label: "Path Traversal & LFI", safe: false },
   { id: "ssti", label: "Server-Side Template Injection (SSTI)", safe: false },
   { id: "auth_security", label: "Authentication & Password Form Security", safe: false },
   { id: "graphql", label: "GraphQL Introspection & Endpoint Probes", safe: false },
 ];
 
-const QUICK_MODULES = ALL_MODULES.filter((m) => m.safe).map((m) => m.id);
+const QUICK_MODULES = [
+  "sql_injection",
+  "xss",
+  "clickjacking",
+  "command_injection",
+];
 const FULL_MODULES = ALL_MODULES.map((m) => m.id);
 
 export default function NewScan() {
@@ -133,12 +138,12 @@ export default function NewScan() {
                 />
               </div>
               <p className="text-xs text-slate-400">
-                Faster execution with limited crawl depth (depth 1, 25 URLs) and essential, low-impact vulnerability checks.
+                Fast, essential assessment executing SQL Injection, XSS, Clickjacking, and Command Injection.
               </p>
               <div className="mt-3 flex flex-wrap gap-1">
                 <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">Depth 1</span>
                 <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">25 URLs</span>
-                <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-950/60 text-emerald-300 font-mono">8 Safe Checks</span>
+                <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-950/60 text-emerald-300 font-mono">4 Core Modules</span>
               </div>
             </div>
 

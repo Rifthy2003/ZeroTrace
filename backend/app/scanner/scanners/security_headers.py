@@ -40,6 +40,10 @@ REQUIRED_HEADERS = {
 
 def scan(endpoint: DiscoveredEndpoint) -> List[ScanFinding]:
     findings: List[ScanFinding] = []
+    url_lower = (endpoint.url or "").lower()
+    if "/socket.io" in url_lower or "/engine.io" in url_lower or "transport=polling" in url_lower:
+        return findings
+
     headers_lower = {k.lower(): v for k, v in endpoint.response_headers.items()}
 
     for header, meta in REQUIRED_HEADERS.items():

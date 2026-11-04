@@ -302,6 +302,7 @@ async def create_scan(req: ScanCreateRequest, db: Session = Depends(get_db)):
         profile=profile,
         program=program,
         user_overrides={
+            "scan_type": scan_type,
             "modules": req.modules,
             "max_depth": req.max_depth,
             "max_urls": req.max_urls,

@@ -136,6 +136,11 @@ def init_db():
         try:
             conn.execute(text("UPDATE scans SET scan_type = 'Full Scan' WHERE LOWER(profile_name) LIKE '%full%' AND (scan_type IS NULL OR scan_type = 'Quick Scan')"))
             conn.execute(text("UPDATE scans SET scan_type = 'Quick Scan' WHERE scan_type IS NULL"))
+            quick_mods_json = json.dumps(["sql_injection", "xss", "clickjacking", "command_injection"])
+            if is_pg:
+                conn.execute(text(f"UPDATE scan_profiles SET modules = '{quick_mods_json}'::json WHERE name = 'Quick Scan' AND is_builtin = true"))
+            else:
+                conn.execute(text(f"UPDATE scan_profiles SET modules = '{quick_mods_json}' WHERE name = 'Quick Scan' AND is_builtin = 1"))
         except Exception:
             pass
 
@@ -147,13 +152,13 @@ def init_db():
             {
                 "id": "profile-builtin-quick",
                 "name": "Quick Scan",
-                "description": "Rapid low-impact assessment with limited depth and essential security checks.",
+                "description": "Rapid assessment focusing on core injection and UI redress vulnerabilities (SQLi, XSS, Clickjacking, Command Injection).",
                 "is_builtin": True,
                 "is_default": False,
-                "modules": ["security_headers", "cookie_security", "sensitive_files", "directory_listing", "information_disclosure"],
+                "modules": ["sql_injection", "xss", "clickjacking", "command_injection"],
                 "max_depth": 1,
-                "max_urls": 10,
-                "max_parameters": 20,
+                "max_urls": 25,
+                "max_parameters": 25,
                 "request_rate": 5.0,
                 "concurrency": 2,
                 "request_timeout": 8.0,
@@ -216,7 +221,10 @@ def init_db():
         for p in builtin_profiles:
             try:
                 exists = db_session.query(ScanProfile).filter(ScanProfile.name == p["name"]).first()
-                if not exists:
+                if exists:
+                    if exists.is_builtin and p["name"] == "Quick Scan":
+                        exists.modules = p["modules"]
+                else:
                     prof_obj = ScanProfile(
                         id=p["id"],
                         name=p["name"],

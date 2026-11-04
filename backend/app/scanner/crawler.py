@@ -268,8 +268,8 @@ class Crawler:
             extracted_links = await self._extract_links_from_html(body, url)
             links.extend(extracted_links)
 
-            # Discover API endpoints mentioned in JavaScript
-            api_matches = re.findall(r'["\'](/(?:rest|api|v[0-9]+|auth|oauth)/[a-zA-Z0-9_\-\/]+)["\']', body, re.IGNORECASE)
+            # Discover API endpoints mentioned in JavaScript (supporting double quotes, single quotes, and backticks)
+            api_matches = re.findall(r'[`"\'](/(?:rest|api|v[0-9]+|auth|oauth)/[a-zA-Z0-9_\-\/]+)[\x60"\']', body, re.IGNORECASE)
             for api_path in api_matches:
                 api_full = urljoin(url, api_path)
                 if is_same_origin(self.start_url, api_full):
@@ -334,6 +334,8 @@ class Crawler:
         for tag in soup.find_all(["a", "link"]):
             href = tag.get("href")
             if not href or href.startswith("javascript:") or href.startswith("mailto:") or href.startswith("#"):
+                continue
+            if "/socket.io" in href or "/engine.io" in href or "transport=polling" in href:
                 continue
             absolute = urljoin(base_url, href)
             if not self.allow_external and not is_same_origin(self.start_url, absolute):

@@ -43,16 +43,19 @@ async def scan(endpoint: DiscoveredEndpoint, client: SafeHTTPClient) -> List[Sca
     body_defaults = {
         p.name: p.sample_value or "test"
         for p in endpoint.parameters
-        if p.location in ("body", "form")
+        if p.location in ("body", "form", "json")
     }
 
     for param in tested_params:
         base_val = param.sample_value or "test"
         location = param.location or ("body" if endpoint.method.upper() == "POST" else "query")
+        is_json = location == "json" or getattr(endpoint, "is_json", False)
 
         # 1. Baseline Request
         try:
-            if location in ("body", "form") or endpoint.method.upper() == "POST":
+            if is_json:
+                baseline = await client.post(endpoint.url, json=_set_body_param(body_defaults, param.name, base_val))
+            elif location in ("body", "form") or endpoint.method.upper() == "POST":
                 baseline = await client.post(endpoint.url, data=_set_body_param(body_defaults, param.name, base_val))
             else:
                 baseline = await client.get(_set_url_param(endpoint.url, param.name, base_val))
@@ -78,7 +81,9 @@ async def scan(endpoint: DiscoveredEndpoint, client: SafeHTTPClient) -> List[Sca
 
         for payload, expected_output, desc in probes:
             try:
-                if location in ("body", "form") or endpoint.method.upper() == "POST":
+                if is_json:
+                    resp = await client.post(endpoint.url, json=_set_body_param(body_defaults, param.name, payload))
+                elif location in ("body", "form") or endpoint.method.upper() == "POST":
                     resp = await client.post(endpoint.url, data=_set_body_param(body_defaults, param.name, payload))
                 else:
                     resp = await client.get(_set_url_param(endpoint.url, param.name, payload))
@@ -104,6 +109,7 @@ async def scan(endpoint: DiscoveredEndpoint, client: SafeHTTPClient) -> List[Sca
                 cwe_id="CWE-78",
                 mitre_attack="T1059",
                 detection_status="Confirmed",
+                finding_group="critical_vulnerabilities",
                 evidence=f"{detected_indicator} Payload: '{detected_probe}'.",
                 description=(
                     f"Parameter '{param.name}' on {endpoint.method.upper()} {endpoint.url} allows command separator "

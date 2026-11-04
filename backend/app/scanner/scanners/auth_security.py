@@ -49,26 +49,37 @@ def scan(endpoint: DiscoveredEndpoint) -> List[ScanFinding]:
                     ))
 
     # 2. Session Token in Query String
-    query_params = parse_qs(parsed.query)
-    for param_name in query_params:
-        if param_name.lower() in SESSION_PARAM_NAMES:
-            findings.append(ScanFinding(
-                type="Authentication Security Weakness",
-                category="Authentication",
-                owasp_category="A07:2021 - Identification and Authentication Failures",
-                url=endpoint.url,
-                method="GET",
-                parameter=param_name,
-                severity="Medium",
-                confidence="Confirmed",
-                cwe_id="CWE-598",
-                mitre_attack="T1539",
-                detection_status="Confirmed",
-                evidence=f"Session identifier parameter '{param_name}' exposed in query string: '{endpoint.url}'.",
-                description="Session identifiers in URLs may be leaked through browser history, referer headers, web server logs, and shared links.",
-                impact="An unauthorized user with access to server logs or browser history could hijack the active user session.",
-                remediation="Store session tokens in secure, HttpOnly, SameSite cookies or HTTP authorization request headers.",
-            ))
+    parsed_path_lower = parsed.path.lower()
+    parsed_query_lower = parsed.query.lower()
+    is_socket_or_transport = (
+        "/socket.io" in parsed_path_lower
+        or "/engine.io" in parsed_path_lower
+        or "transport=polling" in parsed_query_lower
+        or "eio=" in parsed_query_lower
+    )
+
+    if not is_socket_or_transport:
+        query_params = parse_qs(parsed.query)
+        for param_name in query_params:
+            if param_name.lower() in SESSION_PARAM_NAMES:
+                # Do not confirm a vulnerability based solely on parameter name matching
+                findings.append(ScanFinding(
+                    type="Authentication Security Weakness",
+                    category="Authentication",
+                    owasp_category="A07:2021 - Identification and Authentication Failures",
+                    url=endpoint.url,
+                    method="GET",
+                    parameter=param_name,
+                    severity="Low",
+                    confidence="Low confidence",
+                    cwe_id="CWE-598",
+                    mitre_attack="T1539",
+                    detection_status="Requires Manual Verification",
+                    evidence=f"Potential session identifier parameter '{param_name}' exposed in query string: '{endpoint.url}'. Requires manual confirmation of active session token.",
+                    description="Session identifiers in URLs may be leaked through browser history, referer headers, web server logs, and shared links.",
+                    impact="If confirmed to carry an active session token, network or log observers could hijack the session.",
+                    remediation="Store session tokens in secure, HttpOnly, SameSite cookies or HTTP authorization request headers.",
+                ))
 
     # 3. IDOR Heuristic Check
     idor_match = IDOR_PATH_RE.search(parsed.path)
