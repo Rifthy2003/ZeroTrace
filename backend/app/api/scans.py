@@ -34,7 +34,7 @@ from app.schemas.scan import (
     EndpointCoverageResponse,
     EndpointCoverageItem,
 )
-from app.scanner.severity import extract_header_name, SECURITY_HEADER_RULES, CWE_MITRE_MAP
+from app.scanner.severity import extract_header_name, SECURITY_HEADER_RULES, CWE_MITRE_MAP, classify_finding_group
 from app.services.remediation import record_activity
 from app.services.security_posture import calculate_security_posture
 
@@ -72,12 +72,22 @@ def _scan_response(scan: Scan) -> ScanResponse:
         raw_total = 0
         for f in findings:
             raw_total += getattr(f, "raw_instances", 1) or 1
-            if f.type == "Missing Security Header":
+            ftype_low = (f.type or "").lower()
+            if "header" in ftype_low or "csp" in ftype_low:
                 hname = extract_header_name(f.parameter, f.evidence) or (f.parameter or "generic")
-                unique_keys.add((f.type, hname.lower()))
+                unique_keys.add(("header", hname.lower()))
+            elif "clickjacking" in ftype_low:
+                unique_keys.add(("config", "clickjacking"))
+            elif "cors" in ftype_low:
+                unique_keys.add(("config", "cors"))
+            elif "cookie" in ftype_low:
+                unique_keys.add(("cookie", ftype_low, (f.parameter or "").lower()))
+            elif f.type in ("Exposed Sensitive File", "Sensitive File Exposure", "Directory Listing"):
+                path = urlparse(f.url).path if f.url else ""
+                unique_keys.add(("file", ftype_low, path.lower()))
             else:
                 path = urlparse(f.url).path if f.url else ""
-                unique_keys.add((f.type, path, (f.parameter or "").lower()))
+                unique_keys.add(("vuln", ftype_low, path.lower(), (f.parameter or "").lower()))
         data.unique_findings_count = len(unique_keys) if unique_keys else (len(findings) if findings else 0)
         data.raw_occurrences_count = raw_total if raw_total > 0 else (len(findings) if findings else 0)
     else:
@@ -129,9 +139,13 @@ def group_scan_findings(findings: list[Finding]) -> list[FindingResponse]:
         parsed = urlparse(furl) if furl else None
         path = parsed.path if parsed and parsed.path else furl
 
-        if "header" in ftype.lower():
+        if "clickjacking" in ftype.lower():
+            key = "config::clickjacking"
+        elif "header" in ftype.lower() or "csp" in ftype.lower():
             hname = extract_header_name(fparam, fevid) or fparam or "generic"
             key = f"header::{hname.lower()}"
+        elif "cors" in ftype.lower():
+            key = "config::cors"
         elif "cookie" in ftype.lower():
             key = f"cookie::{ftype.lower()}::{fparam}"
         elif ftype == "Technology Detection":
@@ -205,8 +219,10 @@ def group_scan_findings(findings: list[Finding]) -> list[FindingResponse]:
         if g.get("parameter"):
             r.parameter = g["parameter"]
         r.raw_instances = g["instances"]
+        r.finding_group = classify_finding_group(r.type, r.category, r.severity)
 
         r.evidence_details = {
+            "finding_group": r.finding_group,
             "affected_urls": g["affected_urls"],
             "total_affected_endpoints": len(g["affected_urls"]),
             "occurrences": g["occurrences"][:50],
@@ -220,7 +236,11 @@ def group_scan_findings(findings: list[Finding]) -> list[FindingResponse]:
 
         results.append(r)
 
-    results.sort(key=lambda x: (sev_rank.get(x.severity, 0), x.raw_instances or 1), reverse=True)
+    grp_rank = {"critical_vulnerabilities": 3, "other_vulnerabilities": 2, "security_configuration": 1}
+    results.sort(
+        key=lambda x: (grp_rank.get(x.finding_group, 2), sev_rank.get(x.severity, 0), x.raw_instances or 1),
+        reverse=True,
+    )
     return results
 
 

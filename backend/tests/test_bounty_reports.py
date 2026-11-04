@@ -236,10 +236,10 @@ def test_bug_bounty_markdown_format():
 
 
 def test_bug_bounty_pdf_generation_sqli_and_xss_page_count():
-    """Verify generation of professional 4-6 page Bug Bounty PDF reports for SQLi and XSS."""
+    """Verify generation of concise, professional 1-2 page Bug Bounty PDF reports for SQLi and XSS."""
     scan = MockScan()
 
-    # 1. SQL Injection Report (Target 4-6 pages)
+    # 1. SQL Injection Report (Target 1-2 pages)
     f_sqli = MockFinding(
         finding_type="SQL Injection",
         severity=Severity.HIGH,
@@ -252,9 +252,9 @@ def test_bug_bounty_pdf_generation_sqli_and_xss_page_count():
     assert isinstance(pdf_sqli, bytes)
     assert pdf_sqli.startswith(b"%PDF")
     pages_sqli = get_pdf_page_count(pdf_sqli)
-    assert 4 <= pages_sqli <= 6, f"Expected 4-6 pages for SQLi, got {pages_sqli}"
+    assert 1 <= pages_sqli <= 2, f"Expected 1-2 pages for SQLi, got {pages_sqli}"
 
-    # 2. XSS Report (Target 4-6 pages)
+    # 2. XSS Report (Target 1-2 pages)
     f_xss = MockFinding(
         finding_type="Cross-Site Scripting (XSS)",
         severity=Severity.MEDIUM,
@@ -268,11 +268,11 @@ def test_bug_bounty_pdf_generation_sqli_and_xss_page_count():
     assert isinstance(pdf_xss, bytes)
     assert pdf_xss.startswith(b"%PDF")
     pages_xss = get_pdf_page_count(pdf_xss)
-    assert 4 <= pages_xss <= 6, f"Expected 4-6 pages for XSS, got {pages_xss}"
+    assert 1 <= pages_xss <= 2, f"Expected 1-2 pages for XSS, got {pages_xss}"
 
 
 def test_bug_bounty_pdf_csrf_page_count():
-    """Verify CSRF Bug Bounty PDF generation within 4-6 pages."""
+    """Verify CSRF Bug Bounty PDF generation within 1-2 pages."""
     f_csrf = MockFinding(
         finding_type="Cross-Site Request Forgery (CSRF)",
         severity=Severity.MEDIUM,
@@ -287,11 +287,11 @@ def test_bug_bounty_pdf_csrf_page_count():
     pdf_csrf = build_bug_bounty_pdf(f_csrf)
     assert pdf_csrf.startswith(b"%PDF")
     pages = get_pdf_page_count(pdf_csrf)
-    assert 4 <= pages <= 6, f"Expected 4-6 pages for CSRF, got {pages}"
+    assert 1 <= pages <= 2, f"Expected 1-2 pages for CSRF, got {pages}"
 
 
 def test_bug_bounty_pdf_potential_and_manual_verification():
-    """Verify potential and manual verification findings show unassessed CVSS and span 4-6 pages."""
+    """Verify potential and manual verification findings show unassessed CVSS and span 1-2 pages."""
     f_pot = MockFinding(
         finding_type="Sensitive File Exposure",
         severity=Severity.HIGH,
@@ -310,11 +310,11 @@ def test_bug_bounty_pdf_potential_and_manual_verification():
     pdf_pot = build_bug_bounty_pdf(f_pot)
     assert pdf_pot.startswith(b"%PDF")
     pages = get_pdf_page_count(pdf_pot)
-    assert 4 <= pages <= 6, f"Expected 4-6 pages, got {pages}"
+    assert 1 <= pages <= 2, f"Expected 1-2 pages, got {pages}"
 
 
 def test_bug_bounty_pdf_missing_evidence():
-    """Verify findings with missing evidence don't crash and generate valid 4-6 page PDF."""
+    """Verify findings with missing evidence don't crash and generate valid 1-2 page PDF."""
     f_sparse = MockFinding(
         finding_type="Open Redirect",
         severity=Severity.MEDIUM,
@@ -332,11 +332,11 @@ def test_bug_bounty_pdf_missing_evidence():
     pdf_sparse = build_bug_bounty_pdf(f_sparse)
     assert pdf_sparse.startswith(b"%PDF")
     pages = get_pdf_page_count(pdf_sparse)
-    assert 4 <= pages <= 6, f"Expected 4-6 pages, got {pages}"
+    assert 1 <= pages <= 2, f"Expected 1-2 pages, got {pages}"
 
 
 def test_assessment_summary_pdf_generation_multiple_findings():
-    """Verify generation of 5-15 page Security Assessment Summary PDF."""
+    """Verify generation of concise 1-3 page Security Assessment Summary PDF."""
     scan = MockScan()
     f1 = MockFinding(
         finding_id="f-1",
@@ -375,19 +375,21 @@ def test_assessment_summary_pdf_generation_multiple_findings():
 
     pdf = build_assessment_summary_pdf(scan, [f1, f2, f3, f4, f5])
     assert isinstance(pdf, bytes)
-    assert len(pdf) > 4000
+    assert len(pdf) > 2000
     assert pdf.startswith(b"%PDF")
     pages = get_pdf_page_count(pdf)
-    assert pages >= 2
+    assert 1 <= pages <= 3, f"Expected 1-3 pages for multi-finding summary, got {pages}"
 
 
 def test_assessment_summary_pdf_clean_scan():
-    """Verify clean scan with zero findings produces an elegant, professional summary."""
+    """Verify clean scan with zero findings produces an elegant, professional 1-page summary."""
     scan = MockScan()
     pdf_clean = build_assessment_summary_pdf(scan, [])
     assert isinstance(pdf_clean, bytes)
     assert len(pdf_clean) > 2000
     assert pdf_clean.startswith(b"%PDF")
+    pages = get_pdf_page_count(pdf_clean)
+    assert 1 <= pages <= 2, f"Expected 1-2 pages for clean scan summary, got {pages}"
 
 
 def test_bug_bounty_markdown_for_potential_findings():
@@ -538,19 +540,19 @@ def test_complete_website_bug_bounty_pdf_multi_findings():
     pdf = build_complete_website_bug_bounty_pdf(scan, findings)
     assert isinstance(pdf, bytes)
     assert pdf.startswith(b"%PDF")
-    assert len(pdf) > 10000
+    assert len(pdf) > 4000
 
     pages = get_pdf_page_count(pdf)
-    assert 4 <= pages <= 6, f"Expected 4-6 pages, got {pages}"
+    assert 1 <= pages <= 3, f"Expected 1-3 pages for multi-finding website report, got {pages}"
 
 
 def test_complete_website_bug_bounty_pdf_clean_scan():
-    """Verify clean website scan with 0 findings generates a clean 4-6 page PDF."""
+    """Verify clean website scan with 0 findings generates a clean 1-2 page PDF."""
     scan = MockScan(scan_id="scan-clean-999")
     pdf = build_complete_website_bug_bounty_pdf(scan, [])
 
     assert isinstance(pdf, bytes)
     assert pdf.startswith(b"%PDF")
-    assert len(pdf) > 8000
+    assert len(pdf) > 2000
     pages = get_pdf_page_count(pdf)
-    assert 4 <= pages <= 6, f"Expected 4-6 pages for clean scan, got {pages}"
+    assert 1 <= pages <= 2, f"Expected 1-2 pages for clean scan, got {pages}"

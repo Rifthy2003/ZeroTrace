@@ -145,6 +145,7 @@ class FindingResponse(BaseModel):
     cwe_id: Optional[str] = None
     mitre_attack: Optional[str] = None
     detection_status: Optional[str] = "Confirmed"
+    finding_group: Optional[str] = "other_vulnerabilities"
     raw_instances: Optional[int] = 1
     evidence_details: Optional[dict] = None
     status_history: Optional[List[FindingStatusHistoryResponse]] = None

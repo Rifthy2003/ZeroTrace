@@ -358,18 +358,33 @@ class BrowserCrawler:
                             # If form is a React form with JSON submission intent or associated API
                             form_type = f.get("formType", "")
                             if form_type == "login":
-                                api_login_url = urljoin(self.base_url, "/api/login")
-                                endpoints.append(DiscoveredEndpoint(
-                                    url=api_login_url,
-                                    method="POST",
-                                    status_code=200,
-                                    content_type="application/json",
-                                    parameters=[
-                                        DiscoveredParameter(name=p.name, location="json", sample_value=p.sample_value)
-                                        for p in form_params
-                                    ],
-                                    has_form=True,
-                                ))
+                                # Identify candidate REST login endpoints from discovered APIs or standard routes
+                                matched_login_apis = [
+                                    api for api in discovered_api_urls
+                                    if any(k in api.lower() for k in ("login", "signin"))
+                                ]
+                                candidate_login_urls = [
+                                    urljoin(self.base_url, api) for api in matched_login_apis
+                                ] or [
+                                    urljoin(self.base_url, "/rest/user/login"),
+                                    urljoin(self.base_url, "/api/login"),
+                                    urljoin(self.base_url, "/api/Users/login"),
+                                ]
+                                for api_login_url in candidate_login_urls:
+                                    endpoints.append(DiscoveredEndpoint(
+                                        url=api_login_url,
+                                        method="POST",
+                                        status_code=200,
+                                        content_type="application/json",
+                                        parameters=[
+                                            DiscoveredParameter(name=p.name, location="json", sample_value=p.sample_value)
+                                            for p in form_params
+                                        ] if form_params else [
+                                            DiscoveredParameter(name="email", location="json", sample_value="test@example.com"),
+                                            DiscoveredParameter(name="password", location="json", sample_value="password123"),
+                                        ],
+                                        has_form=True,
+                                    ))
                             elif form_type == "signup":
                                 api_signup_url = urljoin(self.base_url, "/api/signup")
                                 endpoints.append(DiscoveredEndpoint(
@@ -446,16 +461,25 @@ class BrowserCrawler:
                         DiscoveredParameter(name=q_k, location="query", sample_value=q_vs[0] if q_vs else "test")
                     )
 
+                api_path_lower = api_path.lower()
+                is_auth_api = any(k in api_path_lower for k in ("login", "signin", "auth", "token", "session", "register", "signup"))
+                method = "POST" if is_auth_api else "GET"
+
                 # Attach parameters for known parameter patterns if none in query string
                 if not extracted_params:
-                    if "search" in api_path:
+                    if is_auth_api:
+                        extracted_params = [
+                            DiscoveredParameter(name="email", location="json", sample_value="test@example.com"),
+                            DiscoveredParameter(name="password", location="json", sample_value="password123"),
+                        ]
+                    elif "search" in api_path_lower:
                         extracted_params.append(DiscoveredParameter(name="q", location="query", sample_value="test"))
-                    elif "vulnerable" in api_path or "safe" in api_path:
+                    elif "vulnerable" in api_path_lower or "safe" in api_path_lower:
                         extracted_params.append(DiscoveredParameter(name="category", location="query", sample_value="electronics"))
 
                 endpoints.append(DiscoveredEndpoint(
                     url=full_api_url,
-                    method="GET",
+                    method=method,
                     status_code=200,
                     content_type="application/json",
                     parameters=extracted_params,
@@ -735,10 +759,27 @@ class BrowserCrawler:
     def _extract_api_endpoints_from_text(self, text: str) -> Set[str]:
         """Extract REST API endpoints mentioned in client scripts."""
         apis: Set[str] = set()
-        # Patterns like fetch('/api/...') or axios.get('/api/...') or fetch('/vulnerable-sqli?category=...')
-        matches = re.findall(r'["\'](/(?:api|v[0-9]+|vulnerable|safe)[a-zA-Z0-9_\-\/\?=&]+)["\']', text)
+        # Patterns like fetch('/rest/...') or axios.get('/api/...') or /auth/login
+        matches = re.findall(
+            r'["\'](/(?:rest|api|v[0-9]+|auth|oauth|user|users|vulnerable|safe)[a-zA-Z0-9_\-\/\?=&]*)["\']',
+            text,
+            re.IGNORECASE,
+        )
         for m in matches:
-            apis.add(m)
+            clean_m = m.split("#")[0].rstrip(",;'\")")
+            if clean_m and len(clean_m) > 1:
+                apis.add(clean_m)
+
+        # Also capture relative rest/... or api/... references in scripts
+        rel_matches = re.findall(
+            r'["\']((?:rest|api)/[a-zA-Z0-9_\-\/\?=&]+)["\']',
+            text,
+            re.IGNORECASE,
+        )
+        for rm in rel_matches:
+            clean_rm = "/" + rm.split("#")[0].rstrip(",;'\")")
+            apis.add(clean_rm)
+
         return apis
 
     def _build_route_url(self, route: str) -> str:

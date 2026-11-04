@@ -53,6 +53,7 @@ class Finding(Base):
     cwe_id = Column(String, nullable=True)
     mitre_attack = Column(String, nullable=True)
     detection_status = Column(String, default="Confirmed", nullable=True)
+    finding_group = Column(String, default="other_vulnerabilities", nullable=True)
     raw_instances = Column(Integer, default=1, nullable=False)
     evidence_details = Column(JSON, default=dict, nullable=True)
 

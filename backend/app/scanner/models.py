@@ -45,5 +45,6 @@ class ScanFinding:
     cwe_id: Optional[str] = None
     mitre_attack: Optional[str] = None
     detection_status: Optional[str] = None
+    finding_group: Optional[str] = None
     raw_instances: int = 1
     evidence_details: Dict[str, Any] = field(default_factory=dict)

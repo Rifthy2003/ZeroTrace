@@ -120,10 +120,16 @@ def _canonical_dedup_key(f: Any) -> str:
     parsed = urlparse(furl) if furl else None
     path = parsed.path if parsed and parsed.path else furl
 
-    if ftype == "Missing Security Header":
+    if "clickjacking" in ftype.lower():
+        return "config::clickjacking"
+
+    if "header" in ftype.lower() or "csp" in ftype.lower() or ftype == "Missing Security Header":
         # Keep genuinely different headers as separate findings, deduplicating across URLs
         header_name = extract_header_name(fparam, fevidence)
         return f"header::{header_name}"
+
+    if "cors" in ftype.lower():
+        return "config::cors"
 
     if "Cookie" in ftype:
         return f"cookie::{ftype.lower()}::{fparam}"

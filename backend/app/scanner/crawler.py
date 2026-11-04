@@ -269,11 +269,23 @@ class Crawler:
             links.extend(extracted_links)
 
             # Discover API endpoints mentioned in JavaScript
-            api_matches = re.findall(r'["\'](/(?:api|v[0-9]+)/[a-zA-Z0-9_\-\/]+)["\']', body)
+            api_matches = re.findall(r'["\'](/(?:rest|api|v[0-9]+|auth|oauth)/[a-zA-Z0-9_\-\/]+)["\']', body, re.IGNORECASE)
             for api_path in api_matches:
                 api_full = urljoin(url, api_path)
                 if is_same_origin(self.start_url, api_full):
                     links.append(normalize_url(api_full))
+                    # If this is an authentication or login endpoint, register it as a testable POST endpoint
+                    if any(k in api_path.lower() for k in ("login", "signin", "auth", "token")):
+                        form_endpoints.append(DiscoveredEndpoint(
+                            url=normalize_url(api_full),
+                            method="POST",
+                            content_type="application/json",
+                            parameters=[
+                                DiscoveredParameter(name="email", location="json", sample_value="test@example.com"),
+                                DiscoveredParameter(name="password", location="json", sample_value="password123"),
+                            ],
+                            has_form=True,
+                        ))
 
         return endpoint, list(dict.fromkeys(links)), form_endpoints
 

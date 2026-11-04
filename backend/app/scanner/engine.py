@@ -586,6 +586,7 @@ async def run_scan(scan_id: str) -> None:
                 cwe_id=f.cwe_id,
                 mitre_attack=f.mitre_attack,
                 detection_status=f.detection_status or "Confirmed",
+                finding_group=getattr(f, "finding_group", "other_vulnerabilities"),
                 raw_instances=getattr(f, "raw_instances", 1) or 1,
                 evidence_details=getattr(f, "evidence_details", {}) or {},
             ))

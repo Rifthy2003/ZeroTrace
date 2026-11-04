@@ -135,29 +135,87 @@ def adjust_severity(f: ScanFinding) -> ScanFinding:
     return f
 
 
+def classify_finding_group(finding_type: str, category: str = "", severity: str = "") -> str:
+    """
+    Classify a finding into one of the three required ZeroTrace categories:
+    1. critical_vulnerabilities ("Critical Security Vulnerabilities")
+    2. other_vulnerabilities ("Other Security Vulnerabilities")
+    3. security_configuration ("Security Configuration Issues")
+    """
+    ftype = (finding_type or "").lower()
+    cat = (category or "").lower()
+    sev = (severity or "").lower()
+
+    # 1. Critical Security Vulnerabilities:
+    # High-impact injection & bypass vulnerabilities
+    if any(k in ftype for k in ("sql injection", "command injection", "template injection", "ssti", "code execution")):
+        return "critical_vulnerabilities"
+    if "path traversal" in ftype and sev in ("critical", "high"):
+        return "critical_vulnerabilities"
+    if "authentication bypass" in ftype or "auth bypass" in ftype:
+        return "critical_vulnerabilities"
+
+    # 3. Security Configuration Issues:
+    # Framing, missing headers, cookies, info disclosure, tech detection, cors
+    if any(k in ftype for k in (
+        "clickjacking",
+        "header",
+        "content-security-policy",
+        "strict-transport-security",
+        "x-frame-options",
+        "x-content-type-options",
+        "referrer-policy",
+        "permissions-policy",
+        "cookie",
+        "information disclosure",
+        "technology detection",
+        "banner",
+        "cors",
+    )) or "configuration" in cat:
+        return "security_configuration"
+
+    # 2. Other Security Vulnerabilities:
+    # XSS, CSRF, Open Redirect, Sensitive Files, Directory Listing, IDOR, etc.
+    return "other_vulnerabilities"
+
+
 def _dedup_key(f: ScanFinding) -> str:
     """Build canonical deduplication key so raw instances group under unique findings."""
-    ftype = f.type or ""
-    furl = f.url or ""
+    ftype = (f.type or "").strip()
+    furl = (f.url or "").strip()
     fparam = (f.parameter or "").strip().lower()
     fevid = (f.evidence or "").strip()
 
     parsed = urlparse(furl) if furl else None
     path = parsed.path if parsed and parsed.path else furl
 
-    if "header" in ftype.lower():
+    # 1. Clickjacking Protection Missing -> Group site-wide into 1 unique finding
+    if "clickjacking" in ftype.lower():
+        return "config::clickjacking"
+
+    # 2. Missing Security Headers -> Group site-wide by specific header name
+    if "header" in ftype.lower() or "csp" in ftype.lower() or "content-security-policy" in ftype.lower():
         header_name = extract_header_name(fparam, fevid) or fparam or "generic"
         return f"header::{header_name.lower()}"
 
+    # 3. CORS Misconfiguration -> Group site-wide
+    if "cors" in ftype.lower():
+        return "config::cors"
+
+    # 4. Cookie Security Issues -> Group by cookie name & issue type
     if "cookie" in ftype.lower():
         return f"cookie::{ftype.lower()}::{fparam}"
 
-    if ftype == "Technology Detection":
-        return f"tech::{fevid.lower() or fparam}"
+    # 5. Technology Detection & Information Disclosure -> Group by fingerprint/evidence
+    if ftype in ("Technology Detection", "Information Disclosure"):
+        return f"config::{ftype.lower()}::{fevid.lower() or fparam}"
 
+    # 6. Sensitive Files & Directory Listing -> Group by specific file path
     if ftype in ("Exposed Sensitive File", "Sensitive File Exposure", "Directory Listing"):
         return f"file::{ftype.lower()}::{path.lower()}"
 
+    # 7. Injection & Endpoint Vulnerabilities (SQLi, XSS, Command Injection, SSTI, Path Traversal, etc.)
+    # Group by vulnerability type, endpoint path, and parameter
     return f"vuln::{ftype.lower()}::{path.lower()}::{fparam}"
 
 
@@ -216,12 +274,15 @@ def correlate(findings: List[ScanFinding]) -> List[ScanFinding]:
             if cur_sev_idx > rep_sev_idx or (cur_sev_idx == rep_sev_idx and f.confidence in ("Confirmed", "High confidence")):
                 rep.confidence = f.confidence
                 rep.detection_status = f.detection_status
+                if f.evidence and len(f.evidence) > len(rep.evidence or ""):
+                    rep.evidence = f.evidence
 
     result = list(groups.values())
 
     # Attach occurrences list, affected URLs, and enforce consistent rule metadata
     for rep in result:
         key = _dedup_key(rep)
+        rep.finding_group = classify_finding_group(rep.type, rep.category, rep.severity)
         hname = extract_header_name(rep.parameter, rep.evidence)
         if "header" in (rep.type or "").lower() and hname and hname in SECURITY_HEADER_RULES:
             rule = SECURITY_HEADER_RULES[hname]
@@ -233,10 +294,13 @@ def correlate(findings: List[ScanFinding]) -> List[ScanFinding]:
             rep.cwe_id = rule["cwe_id"]
             rep.mitre_attack = rule["mitre_attack"]
 
+        aff_list = affected_urls.get(key, [])
         rep.evidence_details = {
             "unique_key": key,
+            "finding_group": rep.finding_group,
             "raw_instances": rep.raw_instances,
-            "affected_urls": affected_urls.get(key, []),
+            "affected_urls": aff_list,
+            "total_affected_endpoints": len(aff_list),
             "occurrences": occurrences.get(key, [])[:100],
         }
 
