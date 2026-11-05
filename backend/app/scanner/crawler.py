@@ -236,10 +236,18 @@ class Crawler:
 
         # 1. Query string parameters
         parsed = urlparse(url)
-        for name, values in parse_qs(parsed.query).items():
-            endpoint.parameters.append(
-                DiscoveredParameter(name=name, location="query", sample_value=values[0] if values else None)
-            )
+        query_str = parsed.query
+        if not query_str and "?" in (parsed.fragment or ""):
+            query_str = parsed.fragment.split("?", 1)[1]
+        for name, values in parse_qs(query_str, keep_blank_values=True).items():
+            if name:
+                endpoint.parameters.append(
+                    DiscoveredParameter(name=name, location="query", sample_value=values[0] if values and values[0] else "test")
+                )
+
+        url_clean = url.split("?")[0].rstrip("/")
+        if any(url_clean.endswith(s) for s in ("/search", "/products/search", "/rest/products/search")) and not any(p.name == "q" for p in endpoint.parameters):
+            endpoint.parameters.append(DiscoveredParameter(name="q", location="query", sample_value="test"))
 
         # 2. JSON Response / API Parameter Discovery
         if "application/json" in content_type:

@@ -2,12 +2,15 @@
 Safe, isolated mock application for testing crawler form discovery,
 POST/GET/JSON parameter extraction, and SQL injection detection without false positives.
 """
+import html
 import sqlite3
 from urllib.parse import parse_qs
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 app = FastAPI(title="Safe Mock Vulnerable App")
+
+stored_comments = []
 
 # In-memory SQLite database setup
 def get_db():
@@ -106,6 +109,101 @@ async def vulnerable_sqli(category: str = "electronics"):
         return HTMLResponse(f"<html><body>Database OperationalError: near \"{str(exc)}\": syntax error</body></html>", status_code=500)
     finally:
         conn.close()
+
+
+@app.get("/safe-xss", response_class=HTMLResponse)
+async def safe_xss(q: str = ""):
+    """Safe reflected parameter with strict HTML entity encoding."""
+    escaped = html.escape(q, quote=True)
+    return f"<html><body>Safe Search Results for: <b>{escaped}</b></body></html>"
+
+
+@app.post("/vulnerable-post-xss", response_class=HTMLResponse)
+async def vulnerable_post_xss(request: Request):
+    """Vulnerable POST parameter reflecting unencoded input."""
+    data = {}
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        try:
+            data = await request.json()
+        except Exception:
+            pass
+    else:
+        body = await request.body()
+        data = parse_qs(body.decode("utf-8", errors="ignore"))
+        data = {k: v[0] for k, v in data.items()}
+    msg = data.get("message", "")
+    return f"<html><body>POST Echo Message: <div>{msg}</div></body></html>"
+
+
+@app.post("/feedback", response_class=JSONResponse)
+async def post_feedback(request: Request):
+    """Accept user comment and store in-memory."""
+    global stored_comments
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        data = await request.json()
+    else:
+        body = await request.body()
+        raw = parse_qs(body.decode("utf-8", errors="ignore"))
+        data = {k: v[0] for k, v in raw.items()}
+    comment = data.get("comment", "")
+    stored_comments.append(comment)
+    return {"status": "success", "comment": comment}
+
+
+@app.get("/about", response_class=HTMLResponse)
+async def view_about():
+    """Renders stored user feedback unescaped (Stored XSS)."""
+    global stored_comments
+    rendered = "<hr>".join(stored_comments)
+    return f"<html><body><h1>About Us</h1><div id='feedback-list'>{rendered}</div></body></html>"
+
+
+@app.get("/spa-dom-xss", response_class=HTMLResponse)
+async def spa_dom_xss():
+    """Client-side DOM XSS test case passing hash/search query to innerHTML."""
+    return """
+    <!DOCTYPE html>
+    <html>
+      <head><title>SPA DOM XSS Test</title></head>
+      <body>
+        <h1>SPA Search Results</h1>
+        <div id="results"></div>
+        <script>
+          const rawQuery = window.location.search || (window.location.hash.includes('?') ? window.location.hash.split('?')[1] : '');
+          const params = new URLSearchParams(rawQuery);
+          const q = params.get('q');
+          if (q) {
+            document.getElementById('results').innerHTML = q;
+          }
+        </script>
+      </body>
+    </html>
+    """
+
+
+@app.get("/safe-dom-xss", response_class=HTMLResponse)
+async def safe_dom_xss():
+    """Safe DOM test case using textContent."""
+    return """
+    <!DOCTYPE html>
+    <html>
+      <head><title>Safe DOM Test</title></head>
+      <body>
+        <h1>Safe SPA Results</h1>
+        <div id="results"></div>
+        <script>
+          const rawQuery = window.location.search || (window.location.hash.includes('?') ? window.location.hash.split('?')[1] : '');
+          const params = new URLSearchParams(rawQuery);
+          const q = params.get('q');
+          if (q) {
+            document.getElementById('results').textContent = q;
+          }
+        </script>
+      </body>
+    </html>
+    """
 
 
 @app.get("/safe-endpoint")

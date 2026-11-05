@@ -43,6 +43,7 @@ COMMON_SPA_ROUTES = [
     "/register",
     "/forgot-password",
     "/search",
+    "/search?q=",
     "/dashboard",
     "/items",
     "/products",
@@ -55,6 +56,7 @@ COMMON_SPA_ROUTES = [
     "/#/register",
     "/#/dashboard",
     "/#/search",
+    "/#/search?q=",
 ]
 
 # Known protected / authenticated route patterns
@@ -306,12 +308,20 @@ class BrowserCrawler:
                     # Collect parameters for the GET page endpoint
                     page_params: List[DiscoveredParameter] = list(standalone_params)
 
-                    # Parse query parameters from URL
+                    # Parse query parameters from URL (including SPA hash-based query strings)
                     parsed_target = urlparse(target_url)
-                    for q_name, q_vals in parse_qs(parsed_target.query).items():
-                        page_params.append(
-                            DiscoveredParameter(name=q_name, location="query", sample_value=q_vals[0] if q_vals else None)
-                        )
+                    query_str = parsed_target.query
+                    if not query_str and "?" in (parsed_target.fragment or ""):
+                        query_str = parsed_target.fragment.split("?", 1)[1]
+                    for q_name, q_vals in parse_qs(query_str, keep_blank_values=True).items():
+                        if q_name and not any(p.name == q_name for p in page_params):
+                            page_params.append(
+                                DiscoveredParameter(name=q_name, location="query", sample_value=q_vals[0] if q_vals and q_vals[0] else "test")
+                            )
+
+                    url_clean = target_url.split("?")[0].rstrip("/")
+                    if any(url_clean.endswith(s) for s in ("/search", "/products/search", "/rest/products/search")) and not any(p.name == "q" for p in page_params):
+                        page_params.append(DiscoveredParameter(name="q", location="query", sample_value="test"))
 
                     # Attach form inputs to the page endpoint
                     for f in forms_data:
@@ -569,7 +579,15 @@ class BrowserCrawler:
                             name = rawId || rawAria || rawPlaceholder || rawName;
                         }
                     }
-                    const cleanName = name.trim().replace(/[\\s\\-_]+/g, '_').toLowerCase();
+                    let cleanName = name.trim().replace(/[\\s\\-_]+/g, '_').toLowerCase();
+                    if (!cleanName || cleanName.length === 0) {
+                        const parentSearch = el.closest('[id*="search" i], [aria-label*="search" i], [class*="search" i], app-mat-search-bar');
+                        if (parentSearch) {
+                            cleanName = 'q';
+                        } else if (window.location.hash.includes('search') || window.location.pathname.includes('search')) {
+                            cleanName = 'q';
+                        }
+                    }
                     if (!cleanName || cleanName.length === 0) return null;
                     const val = el.value || el.getAttribute('value') || '';
                     const placeholder = el.getAttribute('placeholder') || '';

@@ -2,10 +2,12 @@
 Scan engine: orchestrates crawl -> module execution -> correlation -> storage.
 Runs as an asyncio background task so the API never blocks.
 """
+from __future__ import annotations
+
 import asyncio
 import logging
 from datetime import datetime
-from typing import Dict, List, Any, Set
+from typing import Dict, List, Any, Set, Optional
 from urllib.parse import urlparse
 
 from app.core.config import settings
@@ -16,6 +18,7 @@ from app.models.endpoint import Endpoint
 from app.models.parameter import Parameter
 from app.models.finding import Finding, Severity, Confidence
 from app.models.scan_summary import ScanSummary
+from app.scanner.models import ScanFinding, DiscoveredEndpoint, DiscoveredParameter
 from app.scanner.crawler import Crawler
 from app.scanner.http_client import SafeHTTPClient
 from app.scanner.severity import correlate
@@ -705,42 +708,43 @@ async def run_scan(scan_id: str) -> None:
         scan.completed_at = datetime.utcnow()
         db.commit()
 
-        # Run cross-scan remediation correlation
-        rem_res = correlate_scan_remediation(db, scan)
-
-        # Log activities
-        record_activity(
-            db,
-            event_type="scan_completed",
-            title="Scan Completed",
-            description=f"Completed assessment for {base_url} ({len(final)} unique findings, {scan.urls_scanned} routes tested, {total_unique_params_tested} parameters tested).",
-            scan_id=scan.id,
-            application_id=scan.application_id,
-            severity="success",
-            metadata={"findings_count": len(final), "urls_scanned": scan.urls_scanned, "params_tested": total_unique_params_tested},
-        )
-        if rem_res.get("new_count", 0) > 0:
+        # Run cross-scan remediation correlation and activity recording
+        try:
+            rem_res = correlate_scan_remediation(db, scan)
             record_activity(
                 db,
-                event_type="vulns_detected",
-                title=f"{rem_res['new_count']} New Vulnerabilities Detected",
-                description=f"{rem_res['new_count']} new security findings identified in latest scan of {base_url}.",
-                scan_id=scan.id,
-                application_id=scan.application_id,
-                severity="warning",
-                metadata={"new_count": rem_res["new_count"]},
-            )
-        if rem_res.get("resolved_count", 0) > 0:
-            record_activity(
-                db,
-                event_type="vuln_resolved",
-                title=f"{rem_res['resolved_count']} Vulnerabilities Resolved",
-                description=f"{rem_res['resolved_count']} previous findings verified resolved in {base_url}.",
+                event_type="scan_completed",
+                title="Scan Completed",
+                description=f"Completed assessment for {base_url} ({len(final)} unique findings, {scan.urls_scanned} routes tested, {total_unique_params_tested} parameters tested).",
                 scan_id=scan.id,
                 application_id=scan.application_id,
                 severity="success",
-                metadata={"resolved_count": rem_res["resolved_count"]},
+                metadata={"findings_count": len(final), "urls_scanned": scan.urls_scanned, "params_tested": total_unique_params_tested},
             )
+            if rem_res.get("new_count", 0) > 0:
+                record_activity(
+                    db,
+                    event_type="vulns_detected",
+                    title=f"{rem_res['new_count']} New Vulnerabilities Detected",
+                    description=f"{rem_res['new_count']} new security findings identified in latest scan of {base_url}.",
+                    scan_id=scan.id,
+                    application_id=scan.application_id,
+                    severity="warning",
+                    metadata={"new_count": rem_res["new_count"]},
+                )
+            if rem_res.get("resolved_count", 0) > 0:
+                record_activity(
+                    db,
+                    event_type="vuln_resolved",
+                    title=f"{rem_res['resolved_count']} Vulnerabilities Resolved",
+                    description=f"{rem_res['resolved_count']} previous findings verified resolved in {base_url}.",
+                    scan_id=scan.id,
+                    application_id=scan.application_id,
+                    severity="success",
+                    metadata={"resolved_count": rem_res["resolved_count"]},
+                )
+        except Exception as post_err:
+            logger.warning("Post-scan remediation/activity logging non-fatal error: %s", post_err)
 
         logger.info(
             "Scan completed successfully scan_id=%s unique_findings=%d params_tested=%d",
@@ -753,24 +757,37 @@ async def run_scan(scan_id: str) -> None:
         logger.info("Scan cancelled scan_id=%s", scan_id)
         scan.status = ScanStatus.CANCELLED
         scan.completed_at = datetime.utcnow()
-        db.commit()
+        try:
+            db.commit()
+        except Exception:
+            pass
     except Exception as exc:
         logger.exception("Scan failed scan_id=%s err=%s", scan_id, exc)
+        try:
+            db.rollback()
+        except Exception:
+            pass
         scan.status = ScanStatus.FAILED
         scan.error_message = str(exc)[:500]
         scan.completed_at = datetime.utcnow()
-        db.commit()
+        try:
+            db.commit()
+        except Exception as commit_err:
+            logger.error("Failed to commit FAILED status for scan_id=%s: %s", scan_id, commit_err)
         if scan.target:
-            record_activity(
-                db,
-                event_type="scan_failed",
-                title="Scan Failed",
-                description=f"Assessment failed for {scan.target.base_url}: {str(exc)[:120]}",
-                scan_id=scan.id,
-                application_id=scan.application_id,
-                severity="danger",
-                metadata={"error": str(exc)[:300]},
-            )
+            try:
+                record_activity(
+                    db,
+                    event_type="scan_failed",
+                    title="Scan Failed",
+                    description=f"Assessment failed for {scan.target.base_url}: {str(exc)[:120]}",
+                    scan_id=scan.id,
+                    application_id=scan.application_id,
+                    severity="danger",
+                    metadata={"error": str(exc)[:300]},
+                )
+            except Exception:
+                pass
     finally:
         RUNNING_TASKS.pop(scan_id, None)
         db.close()
