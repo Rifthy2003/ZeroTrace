@@ -1329,11 +1329,14 @@ def _finding_canonical_key(f: Any) -> str:
     parsed = urlparse(furl) if furl else None
     path = parsed.path if parsed and parsed.path else furl
 
-    if "clickjacking" in ftype.lower():
-        return "config::clickjacking"
+    # 1. Clickjacking & X-Frame-Options framing protection -> Unified under single framing risk (CWE-1021)
+    if "clickjacking" in ftype.lower() or fparam == "x-frame-options":
+        return "config::clickjacking_framing"
 
     if "header" in ftype.lower() or "csp" in ftype.lower() or ftype == "Missing Security Header":
         header_name = extract_header_name(fparam, fevidence)
+        if header_name and header_name.lower() == "x-frame-options":
+            return "config::clickjacking_framing"
         return f"header::{header_name.lower() if header_name else 'generic'}"
 
     if "cors" in ftype.lower():

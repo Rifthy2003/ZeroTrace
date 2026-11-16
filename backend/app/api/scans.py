@@ -573,8 +573,10 @@ def compare_scans(base_scan_id: str, target_scan_id: str, db: Session = Depends(
     target_domain = urlparse(target_url).netloc or urlparse(target_url).hostname or ""
 
     # Security scores
-    base_posture = calculate_security_posture(db, base_scan.id)
-    target_posture = calculate_security_posture(db, target_scan.id)
+    base_findings = db.query(Finding).filter(Finding.scan_id == base_scan.id).all()
+    target_findings = db.query(Finding).filter(Finding.scan_id == target_scan.id).all()
+    base_posture = calculate_security_posture(base_scan, base_findings)
+    target_posture = calculate_security_posture(target_scan, target_findings)
     base_score = base_posture["score"] if isinstance(base_posture, dict) else getattr(base_posture, "score", 100.0)
     target_score = target_posture["score"] if isinstance(target_posture, dict) else getattr(target_posture, "score", 100.0)
     score_delta = round(target_score - base_score, 1)

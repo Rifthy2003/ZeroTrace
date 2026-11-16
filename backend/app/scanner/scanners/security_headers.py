@@ -2,6 +2,7 @@
 Checks for missing or weak security-relevant HTTP response headers.
 """
 from typing import List
+from urllib.parse import urlparse
 from app.scanner.models import DiscoveredEndpoint, ScanFinding
 
 REQUIRED_HEADERS = {
@@ -45,9 +46,23 @@ def scan(endpoint: DiscoveredEndpoint) -> List[ScanFinding]:
         return findings
 
     headers_lower = {k.lower(): v for k, v in endpoint.response_headers.items()}
+    parsed = urlparse(endpoint.url or "")
+    is_https = parsed.scheme.lower() == "https"
 
     for header, meta in REQUIRED_HEADERS.items():
-        if header not in headers_lower:
+        if header in headers_lower:
+            continue
+
+        # W3C CSP Level 2/3: frame-ancestors directive supersedes and obsoletes X-Frame-Options.
+        # If frame-ancestors is present in CSP, X-Frame-Options is redundant.
+        if header == "x-frame-options":
+            csp = headers_lower.get("content-security-policy", "")
+            if "frame-ancestors" in csp.lower():
+                continue
+
+        # RFC 6797 Section 7.2: HTTP Strict Transport Security is only applicable to HTTPS responses.
+        # For cleartext HTTP responses, classify missing HSTS as Not Applicable rather than a security vulnerability.
+        if header == "strict-transport-security" and not is_https:
             findings.append(
                 ScanFinding(
                     type="Missing Security Header",
@@ -56,14 +71,33 @@ def scan(endpoint: DiscoveredEndpoint) -> List[ScanFinding]:
                     url=endpoint.url,
                     method=endpoint.method,
                     parameter=header,
-                    severity=meta["severity"],
-                    confidence="Confirmed",
-                    evidence=f"Response did not include a '{header}' header.",
-                    description=meta["description"],
-                    impact="Increases exposure to related client-side attacks (clickjacking, XSS, MIME confusion, referrer leakage).",
-                    remediation=meta["remediation"],
+                    severity="Informational",
+                    confidence="Informational",
+                    detection_status="Not Applicable",
+                    evidence="Target/endpoint uses cleartext HTTP; HSTS applies exclusively to HTTPS responses per RFC 6797 §7.2.",
+                    description="Strict-Transport-Security (HSTS) is Not Applicable on cleartext HTTP responses. Browsers ignore HSTS when received over HTTP.",
+                    impact="None (Not Applicable on cleartext HTTP transport).",
+                    remediation="Deploy TLS/HTTPS before configuring Strict-Transport-Security.",
                 )
             )
+            continue
+
+        findings.append(
+            ScanFinding(
+                type="Missing Security Header",
+                category="Security Misconfiguration",
+                owasp_category="A05:2021 - Security Misconfiguration",
+                url=endpoint.url,
+                method=endpoint.method,
+                parameter=header,
+                severity=meta["severity"],
+                confidence="Confirmed",
+                evidence=f"Response did not include a '{header}' header.",
+                description=meta["description"],
+                impact="Increases exposure to related client-side attacks (clickjacking, XSS, MIME confusion, referrer leakage).",
+                remediation=meta["remediation"],
+            )
+        )
 
     # Weak CSP that still allows 'unsafe-inline' scripts
     csp = headers_lower.get("content-security-policy", "")

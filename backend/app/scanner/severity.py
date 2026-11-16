@@ -131,6 +131,9 @@ def extract_header_name(parameter: Optional[str], evidence: Optional[str]) -> Op
 def adjust_severity(f: ScanFinding) -> ScanFinding:
     ftype = f.type or ""
     if "header" in ftype.lower():
+        # Preserve Not Applicable / Informational classification (e.g. HSTS on cleartext HTTP)
+        if getattr(f, "detection_status", "") == "Not Applicable" or f.severity in ("Informational", "informational"):
+            return f
         hname = extract_header_name(f.parameter, f.evidence)
         if hname and hname in SECURITY_HEADER_RULES:
             f.severity = SECURITY_HEADER_RULES[hname]["severity"]
@@ -196,13 +199,15 @@ def _dedup_key(f: ScanFinding) -> str:
     parsed = urlparse(furl) if furl else None
     path = parsed.path if parsed and parsed.path else furl
 
-    # 1. Clickjacking Protection Missing -> Group site-wide into 1 unique finding
-    if "clickjacking" in ftype.lower():
-        return "config::clickjacking"
+    # 1. Clickjacking & X-Frame-Options framing protection -> Unified under single framing risk (CWE-1021)
+    if "clickjacking" in ftype.lower() or fparam == "x-frame-options":
+        return "config::clickjacking_framing"
 
     # 2. Missing Security Headers -> Group site-wide by specific header name
     if "header" in ftype.lower() or "csp" in ftype.lower() or "content-security-policy" in ftype.lower():
         header_name = extract_header_name(fparam, fevid) or fparam or "generic"
+        if header_name.lower() == "x-frame-options":
+            return "config::clickjacking_framing"
         return f"header::{header_name.lower()}"
 
     # 3. CORS Misconfiguration -> Group site-wide
@@ -277,14 +282,26 @@ def correlate(findings: List[ScanFinding]) -> List[ScanFinding]:
             if f.url and f.url not in affected_urls[key]:
                 affected_urls[key].append(f.url)
 
-            # Prefer higher confidence or confirmed status as representative
-            rep_sev_idx = SEVERITY_ORDER.index(rep.severity) if rep.severity in SEVERITY_ORDER else 0
-            cur_sev_idx = SEVERITY_ORDER.index(f.severity) if f.severity in SEVERITY_ORDER else 0
-            if cur_sev_idx > rep_sev_idx or (cur_sev_idx == rep_sev_idx and f.confidence in ("Confirmed", "High confidence")):
+            # Prefer Clickjacking Protection Missing over generic Missing Security Header for framing weakness
+            if "clickjacking" in (f.type or "").lower() and "clickjacking" not in (rep.type or "").lower():
+                rep.type = f.type
+                rep.category = f.category
+                rep.cwe_id = f.cwe_id
+                rep.mitre_attack = f.mitre_attack
+                rep.description = f.description
+                rep.remediation = f.remediation
+                rep.evidence = f.evidence
                 rep.confidence = f.confidence
                 rep.detection_status = f.detection_status
-                if f.evidence and len(f.evidence) > len(rep.evidence or ""):
-                    rep.evidence = f.evidence
+            else:
+                # Prefer higher confidence or confirmed status as representative
+                rep_sev_idx = SEVERITY_ORDER.index(rep.severity) if rep.severity in SEVERITY_ORDER else 0
+                cur_sev_idx = SEVERITY_ORDER.index(f.severity) if f.severity in SEVERITY_ORDER else 0
+                if cur_sev_idx > rep_sev_idx or (cur_sev_idx == rep_sev_idx and f.confidence in ("Confirmed", "High confidence")):
+                    rep.confidence = f.confidence
+                    rep.detection_status = f.detection_status
+                    if f.evidence and len(f.evidence) > len(rep.evidence or ""):
+                        rep.evidence = f.evidence
 
     result = list(groups.values())
 
